@@ -1,0 +1,3 @@
+# Works on both web3 6.x and 7.x (see dust_collector/web3compat.py).
+web3>=6.0
+requests>=2.28

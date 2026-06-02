@@ -1,0 +1,44 @@
+name: security-audit
+
+# Proves on every change that no secrets are committed and that the tool's
+# network egress hasn't silently expanded. See SECURITY.md.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Guard against the web3 6.x / 7.x breakage the shim exists to prevent.
+        web3: ["6", "7"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install (web3 ${{ matrix.web3 }}.x)
+        run: |
+          python -m pip install --upgrade pip
+          if [ "${{ matrix.web3 }}" = "6" ]; then
+            pip install "web3>=6,<7" requests
+          else
+            pip install "web3>=7" requests
+          fi
+
+      - name: Security audit (no secrets, no new egress)
+        run: python scripts/security_audit.py
+
+      - name: Import + compile smoke test
+        run: |
+          python -m py_compile dust_collector/*.py collect.py scripts/security_audit.py
+          python -c "from dust_collector import config, web3compat, wallets, prices, bridges, core, cli; print('import OK on web3', __import__('web3').__version__)"
+
+      - name: CLI help
+        run: python collect.py --help
