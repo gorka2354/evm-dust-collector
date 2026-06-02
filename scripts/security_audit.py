@@ -24,6 +24,10 @@ PKG = os.path.join(ROOT, "dust_collector")
 # Hosts the tool is allowed to contact directly in code (besides RPCs).
 ALLOWED_API_HOSTS = {"api.relay.link", "li.quest", "api.coingecko.com"}
 
+# Binary assets are not scanned as text (random bytes can look like hex).
+SKIP_EXT = {".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf", ".woff", ".woff2",
+            ".ttf", ".otf", ".zip", ".gz", ".lock"}
+
 failures = []
 
 
@@ -61,6 +65,8 @@ def secret_scan():
     for cur, dirs, files in os.walk(ROOT):
         dirs[:] = [d for d in dirs if d not in (".git", "__pycache__", "venv", ".venv")]
         for fn in files:
+            if os.path.splitext(fn)[1].lower() in SKIP_EXT:
+                continue
             p = os.path.join(cur, fn)
             try:
                 txt = open(p, encoding="utf-8", errors="ignore").read()

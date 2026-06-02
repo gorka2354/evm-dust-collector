@@ -21,6 +21,16 @@ Polygon zkEVM native bridge as fallbacks), and sends the result to your wallet.
 
 ---
 
+## Example
+
+A read-only `estimate` run scans every wallet, values the scattered dust, and
+shows exactly what's worth bridging — *example output with placeholder
+addresses:*
+
+![EVM Dust Collector — example estimate run](docs/demo.png)
+
+---
+
 ## Install
 
 ```bash
