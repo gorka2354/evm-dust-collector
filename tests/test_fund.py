@@ -55,7 +55,7 @@ class Chain:
         return {"baseFeePerGas": self.base_fee, "timestamp": int(time.time())}
 
     def get_code(self, address):
-        return b""
+        return b"\xef\x01\x00" if address in self.value_gas else b""  # what a delegated EIP-7702 account shows
 
     def call(self, tx):
         data = bytes(tx["data"])
@@ -162,7 +162,9 @@ def test_an_empty_funder_is_told_how_much_to_send_before_anything_else(capsys):
     token_fee = int(50_000 * 1.2) * int(GWEI * 1.3)
     hop = int(21_000 * 1.2) * int(GWEI * 1.3)
     wanted = 2 * (token_fee * sweep.FUND_MARGIN + hop)
-    assert f"the funder needs {wanted / 10 ** 18:.6g} ETH in all, holds 0: send it {wanted / 10 ** 18:.6g} ETH more" in capsys.readouterr().out
+    shown = sweep._up(wanted / 10 ** 18)
+    assert float(shown) >= wanted / 10 ** 18
+    assert f"the funder needs {shown} ETH in all, holds 0: send it {shown} ETH more" in capsys.readouterr().out
 
 
 def test_a_funder_without_enough_sends_nothing_it_cannot_cover():
@@ -246,6 +248,26 @@ def test_a_top_up_to_an_account_with_code_gets_the_gas_its_value_costs():
     assert tx["gas"] >= 79_495
 
 
+def test_a_top_up_whose_gas_with_its_value_costs_too_much_of_what_it_frees_is_not_sent():
+    # $2 of USDC: $0.38 to top up on the value-free estimate, $0.56 once the value's gas is in: over $0.50.
+    node = Chain(native={FUNDER: 10 ** 16}, tokens={A: 2_000_000})
+    node.value_gas[A] = 79_495
+    rows = sweep.fund_all(wallets(0, 1), FUNDER, DESTINATION, live=True, chains=CHAIN, w3_for=lambda cfg: W3(node))
+    assert [(r["wallet"], r["status"]) for r in rows] == [(A, "not worth it")]
+    assert node.sent == []
+
+
+def test_an_empty_funders_plan_for_a_recipient_with_code_asks_for_enough(capsys):
+    node = Chain(native={}, tokens={A: 5_000_000})
+    node.value_gas[A] = 79_495
+    sweep.fund_all(wallets(0, 1), FUNDER, DESTINATION, chains=CHAIN, w3_for=lambda cfg: W3(node))
+    line = next(l for l in capsys.readouterr().out.splitlines() if "the funder needs" in l)
+    wanted = float(line.split("needs ")[1].split(" ")[0])
+    node.native[FUNDER] = int(wanted * 10 ** 18) + 1  # exactly what the plan asked for
+    rows = sweep.fund_all(wallets(0, 1), FUNDER, DESTINATION, live=True, chains=CHAIN, w3_for=lambda cfg: W3(node))
+    assert [(r["wallet"], r["status"]) for r in rows] == [(A, "sent")]
+
+
 def test_a_node_showing_the_old_balance_after_a_top_up_cannot_spend_the_reserve():
     node = Chain(native={FUNDER: 0}, tokens={A: 5_000_000, B: 5_000_000})
     each = int(50_000 * 1.2) * int(GWEI * 1.3) * sweep.FUND_MARGIN + int(21_000 * 1.2) * int(GWEI * 1.3)
@@ -297,6 +319,13 @@ def funds(tmp_path, monkeypatch):
     (tmp_path / ".env").write_text(f"{TEST_PHRASE}\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     return made
+
+
+@pytest.mark.parametrize("amount, shown", [(0.000269491, "0.0002695"), (1.25163, "1.252"), (1.25121, "1.252"), (0.0001, "0.0001000"),
+                                           (2.14694e-06, "0.000002147"), (12.0, "12.00")])
+def test_amounts_to_send_are_rounded_up_never_down(amount, shown):
+    assert sweep._up(amount) == shown
+    assert float(shown) >= amount
 
 
 def test_fund_plans_only_without_live(funds):
