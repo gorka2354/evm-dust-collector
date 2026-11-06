@@ -11,10 +11,12 @@ balance)`. Nothing from an outside API goes into them.
 
 import concurrent.futures
 import csv
+import functools
 import os
 import time
 
 from web3 import Web3
+from web3.exceptions import TransactionNotFound
 
 from .config import CHAINS, TOKENS, SWEEP_MAX_FEE_SHARE, SWEEP_MIN_USD
 from .prices import to_usd
@@ -36,6 +38,11 @@ TRANSFER_SELECTOR = _selector("transfer(address,uint256)")
 BALANCE_OF_SELECTOR = _selector("balanceOf(address)")
 L1_FEE_UPPER_BOUND = _selector("getL1FeeUpperBound(uint256)")
 L1_FEE = _selector("getL1Fee(bytes)")
+TOKEN_RATIO = _selector("tokenRatio()")
+# A chain whose newest block is older than this is taken for halted: Polygon
+# zkEVM answered every call yet made no block for months, so a transfer sent
+# there waits in its mempool for good.
+MAX_BLOCK_AGE = 3600
 
 
 def _l1_fee_call(blob):
@@ -84,12 +91,26 @@ def l1_fee_upper_bound(w3):
     if w3.eth.get_code(Web3.to_checksum_address(OP_STACK_ORACLE)):
         oracle = Web3.to_checksum_address(OP_STACK_ORACLE)
         try:  # getL1FeeUpperBound(uint256), from the Fjord upgrade on
-            return int.from_bytes(w3.eth.call({"to": oracle, "data": L1_FEE_UPPER_BOUND + TX_SIZE_BYTES.to_bytes(32, "big")}), "big")
+            fee = int.from_bytes(w3.eth.call({"to": oracle, "data": L1_FEE_UPPER_BOUND + TX_SIZE_BYTES.to_bytes(32, "big")}), "big")
         except Exception:  # older: the fee of a transaction-sized blob, doubled for margin
-            return 2 * int.from_bytes(w3.eth.call({"to": oracle, "data": _l1_fee_call(blob)}), "big")
+            fee = 2 * int.from_bytes(w3.eth.call({"to": oracle, "data": _l1_fee_call(blob)}), "big")
+        return fee * _token_ratio(w3, oracle)
     if w3.eth.get_code(Web3.to_checksum_address(SCROLL_ORACLE)):
         return 2 * int.from_bytes(w3.eth.call({"to": Web3.to_checksum_address(SCROLL_ORACLE), "data": _l1_fee_call(blob)}), "big")
     return 0
+
+
+def _token_ratio(w3, oracle):
+    """How many native tokens one ETH of L1 fee costs: tokenRatio() on Mantle, 1 elsewhere.
+
+    Mantle's oracle quotes the L1 fee in ETH but bills it in MNT; without this
+    the reserve came out ~5000 times short and nodes refused the transfers.
+    """
+    try:
+        ratio = int.from_bytes(w3.eth.call({"to": oracle, "data": TOKEN_RATIO}), "big")
+    except Exception:
+        return 1  # the standard OP-stack oracle has no tokenRatio()
+    return max(ratio, 1)
 
 
 def _token_balance(w3, token, wallet):
@@ -104,11 +125,12 @@ def _known(w3, tx_hash):
         return False
 
 
-def _send(w3, tx, key):
+def _send(w3, tx, key, others=()):
     """Sign locally, broadcast, wait. Returns (hash, status): sent, reverted, pending or "error: ...".
 
     The hash comes from the signed bytes, so it is kept even when the node's
-    reply to the broadcast is lost.
+    reply to the broadcast is lost. `others` make nodes for the chain's other
+    endpoints, asked for the receipt when this one refuses.
     """
     signed = w3.eth.account.sign_transaction(tx, key)
     tx_hash = "0x" + bytes(signed.hash).hex()
@@ -118,31 +140,43 @@ def _send(w3, tx, key):
         # Refused, or taken with the reply lost: only the node can tell which.
         if not _known(w3, tx_hash):
             return tx_hash, f"error: {_short(e)}"
-    receipt = _receipt(w3, tx_hash)
+    receipt = _receipt(w3, tx_hash, others)
     if receipt is None:
         # Broadcast, not mined yet. The next run finds it in flight and leaves the chain alone.
         return tx_hash, "pending"
     return tx_hash, "sent" if receipt.status == 1 else "reverted"
 
 
-def _receipt(w3, tx_hash):
+def _receipt(w3, tx_hash, others=()):
     """The receipt, or None if none came within RECEIPT_TIMEOUT.
 
     Polled every RECEIPT_POLL seconds, not web3's 0.1: that rate got this
     machine banned by public nodes for an hour. A refused read (403, 429)
-    counts as "not yet".
+    moves on to the chain's other endpoints; "not found" means not mined yet.
     """
+    makers = [lambda: w3, *others]
+    nodes = {}
     deadline = time.monotonic() + RECEIPT_TIMEOUT
     while True:
-        try:
-            receipt = w3.eth.get_transaction_receipt(tx_hash)
+        for i, make in enumerate(makers):
+            try:
+                node = nodes[i] if i in nodes else nodes.setdefault(i, make())
+                receipt = node.eth.get_transaction_receipt(tx_hash)
+            except TransactionNotFound:
+                break  # not mined yet
+            except Exception:
+                continue  # this endpoint refuses: ask the next
             if receipt is not None:
                 return receipt
-        except Exception:
-            pass  # not mined yet, or the node briefly refusing: ask again
+            break
         if time.monotonic() + RECEIPT_POLL >= deadline:
             return None  # no time left for another look: none starts past the deadline
         time.sleep(RECEIPT_POLL)
+
+
+def _other_nodes(cfg, w3_for):
+    """Makers of a node for each endpoint of the chain besides the one in use."""
+    return [functools.partial(w3_for, {**cfg, "rpc": rpc}) for rpc in cfg.get("rpcs", []) if rpc != cfg["rpc"]]
 
 
 def _short(error):
@@ -150,7 +184,7 @@ def _short(error):
     return " ".join(str(error).split())[:70]
 
 
-def sweep_chain(w3, chain, cfg, wallet, key, to, live, rows):
+def sweep_chain(w3, chain, cfg, wallet, key, to, live, rows, others=()):
     """Plan, and if live send, one wallet's sweep on one chain. Appends one dict per balance to `rows`.
 
     Rows are appended as each step happens, so a transaction already sent is
@@ -216,7 +250,7 @@ def sweep_chain(w3, chain, cfg, wallet, key, to, live, rows):
             continue
         tx = {"from": wallet, "to": contract, "value": 0, "data": data,
               "gas": gas, "nonce": nonce, "chainId": cfg["id"], **fee_fields}
-        tx_hash, status = _send(w3, tx, key)
+        tx_hash, status = _send(w3, tx, key, others)
         # Recorded before any further call to the node, so a failing call can't lose the hash.
         sent_row = row(symbol, held, dec, value_usd, fee_usd, status, tx_hash)
         if status == "sent":
@@ -250,7 +284,7 @@ def sweep_chain(w3, chain, cfg, wallet, key, to, live, rows):
         else:
             tx = {"from": wallet, "to": to, "value": amount, "data": b"", "gas": gas, "nonce": nonce,
                   "chainId": cfg["id"], **fee_fields}
-            tx_hash, status = _send(w3, tx, key)
+            tx_hash, status = _send(w3, tx, key, others)
             row(native, amount, decimals, value_usd, fee_usd, status, tx_hash)
 
 
@@ -268,7 +302,7 @@ def sweep_wallet(wallet, key, to, live=False, chains=None, w3_for=None, only=Non
         if only is not None and (wallet, chain) not in only:
             continue
         try:
-            sweep_chain(w3_for(cfg), chain, cfg, wallet, key, to, live, rows)
+            sweep_chain(w3_for(cfg), chain, cfg, wallet, key, to, live, rows, _other_nodes(cfg, w3_for))
         except Exception as e:
             rows.append({"chain": chain, "wallet": wallet, "symbol": cfg["native"], "amount": 0, "usd": 0,
                          "fee_usd": 0, "status": f"error: {_short(e)}", "tx": None})
@@ -279,21 +313,31 @@ def reachable_chains(chains, w3_for):
     """Split chains into those with a node that answers with the configured chain id, and the rest with why.
 
     A chain's rpc is tried first, then its fallback_rpcs in order. A chain that
-    is up comes back with "rpc" set to the endpoint that answered.
+    is up comes back with "rpc" set to the endpoint that answered, and "rpcs"
+    listing them all. An endpoint whose newest block is over MAX_BLOCK_AGE old
+    doesn't count: the node lags, or the chain has stopped.
     """
     def probe(item):
         name, cfg = item
         why = None
-        for rpc in [cfg["rpc"], *cfg.get("fallback_rpcs", [])]:
-            candidate = {**cfg, "rpc": rpc}
+        rpcs = [cfg["rpc"], *cfg.get("fallback_rpcs", [])]
+        for rpc in rpcs:
+            candidate = {**cfg, "rpc": rpc, "rpcs": rpcs}
             try:
-                got = w3_for(candidate).eth.chain_id
+                w3 = w3_for(candidate)
+                got = w3.eth.chain_id
+                stamp = w3.eth.get_block("latest").get("timestamp") if got == cfg["id"] else None
             except Exception as e:
                 why = why or f"node unreachable ({_short(e)[:40]})"
                 continue
-            if got == cfg["id"]:
-                return name, candidate, None
-            why = why or f"node answers for chain {got}, not {cfg['id']}"
+            if got != cfg["id"]:
+                why = why or f"node answers for chain {got}, not {cfg['id']}"
+                continue
+            age = time.time() - stamp if stamp else 0
+            if age > MAX_BLOCK_AGE:
+                why = why or f"no new block for {age / 86400:.0f} day(s): the chain looks halted"
+                continue
+            return name, candidate, None
         return name, None, why
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:

@@ -3,10 +3,13 @@
 Chains are faked; signing is real, with keys of the public BIP-39 test phrase.
 """
 
+import time
+
 import pytest
 from eth_abi import decode
 from eth_account import Account
 from web3 import Web3
+from web3.exceptions import TransactionNotFound
 
 from dust_collector import sweep
 from dust_collector.prices import PRICES
@@ -44,6 +47,8 @@ class FakeEth:
         self.receipt_refusals = 0
         self.receipt_status = 1
         self.upper_bound_missing = False
+        self.token_ratio = None      # set: the oracle bills the L1 fee in the native token, like Mantle's
+        self.block_age = 0           # seconds since the newest block
         self.transfer_answer = 1     # what the token's transfer() returns
         self.token_moves = True      # whether a mined token transfer empties the balance
         self.lost_reply = False      # take the transaction, then lose the reply
@@ -58,7 +63,7 @@ class FakeEth:
         return self.balance
 
     def get_block(self, tag):
-        return {"baseFeePerGas": self.base_fee}
+        return {"baseFeePerGas": self.base_fee, "timestamp": int(time.time()) - self.block_age}
 
     def get_code(self, address):
         return b"\x01" if self.oracle and address.lower() == self.oracle.lower() else b""
@@ -68,6 +73,10 @@ class FakeEth:
             if bytes(tx["data"][:4]) == sweep.TRANSFER_SELECTOR:
                 return self.transfer_answer.to_bytes(32, "big")
             return self.token_balance.to_bytes(32, "big")
+        if bytes(tx["data"][:4]) == sweep.TOKEN_RATIO:
+            if self.token_ratio is None:
+                raise ValueError("execution reverted")  # a standard OP-stack oracle has no tokenRatio()
+            return self.token_ratio.to_bytes(32, "big")
         self.calls.append(bytes(tx["data"]))
         if self.upper_bound_missing and tx["data"][:4] == UPPER_BOUND:
             raise ValueError("execution reverted")
@@ -121,7 +130,7 @@ class FakeEth:
             self.receipt_refusals -= 1
             raise ConnectionError("403 Client Error: Forbidden")  # a public node that has had enough
         if not self.mined:
-            raise LookupError("transaction not found")
+            raise TransactionNotFound("transaction not found")  # what web3 raises for a null receipt
         return type("Receipt", (), {"status": self.receipt_status})()
 
 
@@ -193,6 +202,33 @@ def test_scroll_doubles_the_fee_of_a_transaction_sized_blob():
     assert sweep.l1_fee_upper_bound(FakeW3(eth)) == 14
     assert eth.calls[-1][:4] == L1_FEE
     assert len(decode(["bytes"], eth.calls[-1][4:])[0]) == sweep.TX_SIZE_BYTES
+
+
+def test_mantle_bills_the_l1_fee_in_its_own_token_at_the_oracles_ratio():
+    eth = FakeEth(balance=1, oracle=sweep.OP_STACK_ORACLE, l1_fee=7)
+    eth.token_ratio = 5066
+    assert sweep.l1_fee_upper_bound(FakeW3(eth)) == 7 * 5066
+
+
+def test_a_receipt_refused_by_the_node_in_use_is_read_from_another_endpoint():
+    first, second = FakeEth(balance=10 ** 15), FakeEth(balance=0)
+    first.receipt_refusals = 10 ** 9  # banned for good
+    nodes = {"https://first": FakeW3(first), "https://second": FakeW3(second)}
+    chains = {"plain": {**CHAIN["plain"], "rpc": "https://first", "fallback_rpcs": ["https://second"]}}
+    rows = sweep.sweep_all([{"address": WALLET, "key": KEY}], DESTINATION, live=True, chains=chains,
+                           w3_for=lambda cfg: nodes[cfg["rpc"]])
+    assert [r["status"] for r in rows] == ["sent"]
+    assert len(first.sent) == 1 and second.sent == []
+
+
+def test_an_endpoint_with_no_new_block_for_hours_is_not_used(capsys):
+    stuck, fresh = FakeEth(balance=10 ** 15), FakeEth(balance=10 ** 15)
+    stuck.block_age = 125 * 86400
+    up, down = sweep.reachable_chains({"plain": {**CHAIN["plain"], "rpc": "https://stuck"}}, lambda cfg: FakeW3(stuck))
+    assert up == {} and "looks halted" in down["plain"]
+    up, down = sweep.reachable_chains({"plain": {**CHAIN["plain"], "rpc": "https://stuck", "fallback_rpcs": ["https://fresh"]}},
+                                      lambda cfg: FakeW3(stuck if cfg["rpc"] == "https://stuck" else fresh))
+    assert up["plain"]["rpc"] == "https://fresh" and down == {}
 
 
 def test_a_chain_without_an_oracle_bills_no_l1_fee():
