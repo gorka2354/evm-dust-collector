@@ -26,6 +26,7 @@ SCROLL_ORACLE = "0x5300000000000000000000000000000000000002"
 # A signed transfer is about 110 bytes, an ERC-20 transfer about 180.
 TX_SIZE_BYTES = 200
 RECEIPT_TIMEOUT = 180  # seconds to wait for a transaction to be mined
+RECEIPT_POLL = 2       # seconds between receipt checks
 
 def _selector(signature):
     return bytes(Web3.keccak(text=signature)[:4])
@@ -117,12 +118,31 @@ def _send(w3, tx, key):
         # Refused, or taken with the reply lost: only the node can tell which.
         if not _known(w3, tx_hash):
             return tx_hash, f"error: {_short(e)}"
-    try:
-        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=RECEIPT_TIMEOUT)
-    except Exception:
+    receipt = _receipt(w3, tx_hash)
+    if receipt is None:
         # Broadcast, not mined yet. The next run finds it in flight and leaves the chain alone.
         return tx_hash, "pending"
     return tx_hash, "sent" if receipt.status == 1 else "reverted"
+
+
+def _receipt(w3, tx_hash):
+    """The receipt, or None if none came within RECEIPT_TIMEOUT.
+
+    Polled every RECEIPT_POLL seconds, not web3's 0.1: that rate got this
+    machine banned by public nodes for an hour. A refused read (403, 429)
+    counts as "not yet".
+    """
+    deadline = time.monotonic() + RECEIPT_TIMEOUT
+    while True:
+        try:
+            receipt = w3.eth.get_transaction_receipt(tx_hash)
+            if receipt is not None:
+                return receipt
+        except Exception:
+            pass  # not mined yet, or the node briefly refusing: ask again
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(RECEIPT_POLL)
 
 
 def _short(error):
@@ -256,19 +276,30 @@ def sweep_wallet(wallet, key, to, live=False, chains=None, w3_for=None, only=Non
 
 
 def reachable_chains(chains, w3_for):
-    """Split chains into those whose node answers with the configured chain id, and the rest with why."""
+    """Split chains into those with a node that answers with the configured chain id, and the rest with why.
+
+    A chain's rpc is tried first, then its fallback_rpcs in order. A chain that
+    is up comes back with "rpc" set to the endpoint that answered.
+    """
     def probe(item):
         name, cfg = item
-        try:
-            got = w3_for(cfg).eth.chain_id
-        except Exception as e:
-            return name, f"node unreachable ({_short(e)[:40]})"
-        return name, None if got == cfg["id"] else f"node answers for chain {got}, not {cfg['id']}"
+        why = None
+        for rpc in [cfg["rpc"], *cfg.get("fallback_rpcs", [])]:
+            candidate = {**cfg, "rpc": rpc}
+            try:
+                got = w3_for(candidate).eth.chain_id
+            except Exception as e:
+                why = why or f"node unreachable ({_short(e)[:40]})"
+                continue
+            if got == cfg["id"]:
+                return name, candidate, None
+            why = why or f"node answers for chain {got}, not {cfg['id']}"
+        return name, None, why
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
-        verdicts = dict(pool.map(probe, chains.items()))
-    up = {name: cfg for name, cfg in chains.items() if verdicts[name] is None}
-    return up, {name: why for name, why in verdicts.items() if why}
+        results = list(pool.map(probe, chains.items()))
+    up = {name: cfg for name, cfg, _ in results if cfg is not None}
+    return up, {name: why for name, cfg, why in results if cfg is None}
 
 
 def sweep_all(wallets, to, live=False, workers=8, chains=None, w3_for=None, only=None):
@@ -285,9 +316,13 @@ def sweep_all(wallets, to, live=False, workers=8, chains=None, w3_for=None, only
         missing = sum(1 for w in wallets if not w.get("key"))
         raise ValueError(f"{missing} wallet(s) have no key: a live sweep needs every key")
     w3_for = w3_for or (lambda cfg: get_w3(cfg["rpc"], timeout=20))
-    chains, down = reachable_chains(CHAINS if chains is None else chains, w3_for)
+    asked = CHAINS if chains is None else chains
+    chains, down = reachable_chains(asked, w3_for)
     for name, why in sorted(down.items()):
         print(f"  [!] {name}: {why} - skipped")
+    for name, cfg in chains.items():
+        if cfg["rpc"] != asked[name]["rpc"]:
+            print(f"  [*] {name}: using {cfg['rpc']} (the first RPC didn't answer)")
     if not chains:
         print("  [!] No chain left to sweep.")
         return []

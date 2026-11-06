@@ -14,18 +14,27 @@ SEND_PERCENT = 0.82     # bridge 82% of a native balance, keep 18% for gas + L1 
 SWEEP_MIN_USD = 0.05        # sweep: skip a balance worth less than this
 SWEEP_MAX_FEE_SHARE = 0.25  # sweep: skip a balance whose transfer fee is more than this share of it
 
+# fallback_rpcs (optional) are tried in order when a chain's rpc doesn't answer;
+# public nodes ban an IP that polls them hard, often for an hour.
+#
 # bridge field picks the adapter in bridges.py:
 #   "relay"        -> Relay Protocol  (default, most chains)
 #   "lifi"         -> LiFi            (Lens GHO, which Relay does not support)
 #   "native_zkevm" -> Polygon zkEVM native bridge (to Ethereum L1, then re-run)
 #   None           -> scan only, no automated bridge route
 CHAINS = {
-    "ethereum":   {"id": 1,        "rpc": "https://ethereum-rpc.publicnode.com",            "native": "ETH",  "decimals": 18, "bridge": "relay"},
-    "arbitrum":   {"id": 42161,    "rpc": "https://arbitrum-one-rpc.publicnode.com",        "native": "ETH",  "decimals": 18, "bridge": "relay"},
-    "optimism":   {"id": 10,       "rpc": "https://optimism-rpc.publicnode.com",            "native": "ETH",  "decimals": 18, "bridge": "relay"},
-    "base":       {"id": 8453,     "rpc": "https://base-rpc.publicnode.com",                "native": "ETH",  "decimals": 18, "bridge": "relay"},
-    "polygon":    {"id": 137,      "rpc": "https://polygon-bor-rpc.publicnode.com",         "native": "POL",  "decimals": 18, "bridge": "relay"},
-    "bsc":        {"id": 56,       "rpc": "https://bsc-rpc.publicnode.com",                 "native": "BNB",  "decimals": 18, "bridge": "relay"},
+    "ethereum":   {"id": 1,        "rpc": "https://ethereum-rpc.publicnode.com",            "native": "ETH",  "decimals": 18, "bridge": "relay",
+                   "fallback_rpcs": ["https://eth.drpc.org", "https://1rpc.io/eth"]},
+    "arbitrum":   {"id": 42161,    "rpc": "https://arbitrum-one-rpc.publicnode.com",        "native": "ETH",  "decimals": 18, "bridge": "relay",
+                   "fallback_rpcs": ["https://arb1.arbitrum.io/rpc", "https://arbitrum.drpc.org"]},
+    "optimism":   {"id": 10,       "rpc": "https://optimism-rpc.publicnode.com",            "native": "ETH",  "decimals": 18, "bridge": "relay",
+                   "fallback_rpcs": ["https://mainnet.optimism.io", "https://optimism.drpc.org"]},
+    "base":       {"id": 8453,     "rpc": "https://base-rpc.publicnode.com",                "native": "ETH",  "decimals": 18, "bridge": "relay",
+                   "fallback_rpcs": ["https://mainnet.base.org", "https://base.drpc.org"]},
+    "polygon":    {"id": 137,      "rpc": "https://polygon-bor-rpc.publicnode.com",         "native": "POL",  "decimals": 18, "bridge": "relay",
+                   "fallback_rpcs": ["https://polygon.drpc.org", "https://1rpc.io/matic"]},
+    "bsc":        {"id": 56,       "rpc": "https://bsc-rpc.publicnode.com",                 "native": "BNB",  "decimals": 18, "bridge": "relay",
+                   "fallback_rpcs": ["https://bsc-dataseed.bnbchain.org", "https://bsc.drpc.org"]},
     "avalanche":  {"id": 43114,    "rpc": "https://api.avax.network/ext/bc/C/rpc",          "native": "AVAX", "decimals": 18, "bridge": "relay"},
     "fantom":     {"id": 250,      "rpc": "https://rpc.ftm.tools",                          "native": "FTM",  "decimals": 18, "bridge": "relay"},
     "zksync":     {"id": 324,      "rpc": "https://mainnet.era.zksync.io",                  "native": "ETH",  "decimals": 18, "bridge": "relay"},

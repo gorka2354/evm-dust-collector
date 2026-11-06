@@ -151,7 +151,8 @@ def egress_scan():
     from dust_collector.config import CHAINS
     allowed = set(ALLOWED_API_HOSTS)
     for cfg in CHAINS.values():
-        allowed.add(urlparse(cfg["rpc"]).netloc)
+        for rpc in [cfg["rpc"], *cfg.get("fallback_rpcs", [])]:
+            allowed.add(urlparse(rpc).netloc)
 
     url_re = re.compile(r'https?://[^\s"\'`)]+')
     bad = 0
