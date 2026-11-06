@@ -356,6 +356,22 @@ def test_an_empty_wallet_has_nothing_to_report():
     assert run(FakeEth(balance=0)) == []
 
 
+def test_a_wrapped_token_is_valued_as_what_it_wraps(monkeypatch):
+    monkeypatch.setattr(sweep, "TOKENS", {"plain": [{"symbol": "WETH", "address": TOKEN, "decimals": 18, "price_of": "ETH"}]})
+    rows = run(FakeEth(balance=10 ** 15, token_balance=10 ** 15))  # 0.001 WETH
+    [weth] = [r for r in rows if r["symbol"] == "WETH"]
+    assert weth["status"] == "planned"
+    assert weth["usd"] == pytest.approx(2.0)
+
+
+@pytest.mark.parametrize("base_fee, status", [(GWEI // 10, "planned"), (GWEI, "not worth it")])
+def test_a_token_without_a_price_moves_only_while_its_transfer_is_cheap(monkeypatch, base_fee, status):
+    # 60k gas at 1.3x base fee: $0.0156 at 0.1 gwei, $0.156 at 1 gwei, against a $0.10 ceiling.
+    monkeypatch.setattr(sweep, "TOKENS", {"plain": [{"symbol": "LP", "address": TOKEN, "decimals": 18}]})
+    rows = run(FakeEth(balance=10 ** 15, token_balance=10 ** 12, base_fee=base_fee))
+    assert [r["status"] for r in rows if r["symbol"] == "LP"] == [status]
+
+
 def test_a_token_without_gas_beside_it_is_reported_and_left():
     eth = FakeEth(balance=10, token_balance=5_000_000)
     rows = run(eth)

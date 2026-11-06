@@ -19,8 +19,8 @@ from decimal import ROUND_CEILING, Decimal
 from web3 import Web3
 from web3.exceptions import TransactionNotFound
 
-from .config import CHAINS, TOKENS, SWEEP_MAX_FEE_SHARE, SWEEP_MIN_USD
-from .prices import to_usd
+from .config import CHAINS, TOKENS, SWEEP_MAX_FEE_SHARE, SWEEP_MIN_USD, SWEEP_UNPRICED_MAX_FEE_USD
+from .prices import to_usd, token_priced, token_usd
 from .web3compat import get_w3, raw_tx
 
 # Rollups that bill the L1 data fee on top of gas expose it through these.
@@ -229,7 +229,7 @@ def sweep_chain(w3, chain, cfg, wallet, key, to, live, rows, others=()):
     for token, held in tokens:
         symbol, dec = token["symbol"], token["decimals"]
         contract = Web3.to_checksum_address(token["address"])
-        value_usd = to_usd(symbol, held / 10 ** dec)
+        value_usd = token_usd(token, held / 10 ** dec)
         data = transfer_data(to, held)
         try:
             gas = int(w3.eth.estimate_gas({"from": wallet, "to": contract, "data": data}) * 1.2)
@@ -247,7 +247,9 @@ def sweep_chain(w3, chain, cfg, wallet, key, to, live, rows, others=()):
             # What `fund` needs to unlock it: this fee, against the gas the wallet has.
             row(symbol, held, dec, value_usd, fee_usd, "no gas", gas=gas, native_wei=balance)
             continue
-        if not worth_sending(value_usd, fee_usd):
+        # A token with no price (a pool share) moves while gas is cheap; the rest by what they're worth.
+        worth = worth_sending(value_usd, fee_usd) if token_priced(token) else fee_usd <= SWEEP_UNPRICED_MAX_FEE_USD
+        if not worth:
             row(symbol, held, dec, value_usd, fee_usd, "not worth it")
             continue
         if not live:

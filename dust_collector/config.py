@@ -13,6 +13,7 @@ MIN_PROFIT_USD = 0.15   # skip a chain if net value after gas+bridge is below th
 SEND_PERCENT = 0.82     # bridge 82% of a native balance, keep 18% for gas + L1 fees
 SWEEP_MIN_USD = 0.05        # sweep: skip a balance worth less than this
 SWEEP_MAX_FEE_SHARE = 0.25  # sweep: skip a balance whose transfer fee is more than this share of it
+SWEEP_UNPRICED_MAX_FEE_USD = 0.10  # sweep: a listed token without a price moves only below this fee
 
 # fallback_rpcs (optional) are tried in order when a chain's rpc doesn't answer;
 # public nodes ban an IP that polls them hard, often for an hour.
@@ -66,21 +67,58 @@ CHAINS = {
     "opbnb":      {"id": 204,      "rpc": "https://opbnb-mainnet-rpc.bnbchain.org",         "native": "BNB",  "decimals": 18, "bridge": None},
 }
 
-# ERC20 tokens worth scanning/sweeping per chain.
+# ERC20 tokens worth scanning/sweeping per chain. "price_of" names the symbol a
+# token is priced as (WETH as ETH); a token without a known price moves in a
+# sweep only while its transfer costs under SWEEP_UNPRICED_MAX_FEE_USD.
 TOKENS = {
     "polygon": [
         {"symbol": "USDC",   "address": "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", "decimals": 6},
         {"symbol": "USDC.e", "address": "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174", "decimals": 6},
         {"symbol": "USDT",   "address": "0xc2132D05D31c914a87C6611C10748AEb04B58e8F", "decimals": 6},
         {"symbol": "EURA",   "address": "0xE0B52e49357Fd4DAf2c15e02058DCE6BC0057db4", "decimals": 18},
+        {"symbol": "WETH",   "address": "0x7ceB23fD6bC0adD59E62ac25578270cFf1b9f619", "decimals": 18, "price_of": "ETH"},
     ],
     "base": [
         {"symbol": "USDC", "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", "decimals": 6},
+        # Seamless's aToken: one per WETH supplied, and it transfers like any ERC-20.
+        {"symbol": "sWETH", "address": "0x48bf8fCd44e2977c8a9A744658431A8e6C0d866c", "decimals": 18, "price_of": "ETH"},
     ],
     "arbitrum": [
         {"symbol": "USDC.e", "address": "0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8", "decimals": 6},
         {"symbol": "USDC",   "address": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", "decimals": 6},
         {"symbol": "USDT",   "address": "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9", "decimals": 6},
+        # GMX V2 market tokens: no market price here, so they move whenever gas is cheap.
+        {"symbol": "GM",     "address": "0x9C2433dFD71096C435Be9465220BB2B189375eA7", "decimals": 18},
+        {"symbol": "GM",     "address": "0x70d95587d40A2caf56bd97485aB3Eec10Bee6336", "decimals": 18},
+        {"symbol": "GM",     "address": "0xB686BcB112660343E6d15BDb65297e110C8311c4", "decimals": 18},
+    ],
+    "optimism": [
+        {"symbol": "USDC",   "address": "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85", "decimals": 6},
+        {"symbol": "USDC.e", "address": "0x7F5c764cBc14f9669B88837ca1490cCa17c31607", "decimals": 6},
+        {"symbol": "WETH",   "address": "0x4200000000000000000000000000000000000006", "decimals": 18, "price_of": "ETH"},
+        {"symbol": "BTC.b",  "address": "0x2297aEbD383787A160DD0d9F71508148769342E3", "decimals": 8, "price_of": "BTC"},
+        # Stargate's ETH pool share: worth about one ETH each.
+        {"symbol": "S*SGETH", "address": "0xd22363e3762cA7339569F3d33EADe20127D5F98C", "decimals": 18, "price_of": "ETH"},
+    ],
+    "zksync": [
+        {"symbol": "USDC.e", "address": "0x3355df6D4c9C3035724Fd0e3914dE96A5a83aaf4", "decimals": 6},
+        {"symbol": "WETH",   "address": "0x5AEa5775959fBC2557Cc8789bC1bf90A239D9a91", "decimals": 18, "price_of": "ETH"},
+        # SyncSwap USDC/WETH classic pool share: no market price, moves whenever gas is cheap.
+        {"symbol": "cSLP",   "address": "0x80115c708E12eDd42E504c1cD52Aea96C547c05c", "decimals": 18},
+    ],
+    "zetachain": [
+        {"symbol": "BNB.BSC", "address": "0x48f80608B672DC30DC7e3dbBd0343c5F02C738Eb", "decimals": 18, "price_of": "BNB"},
+        {"symbol": "ETH.ETH", "address": "0xd97B1de3619ed2c6BEb3860147E30cA8A7dC9891", "decimals": 18, "price_of": "ETH"},
+    ],
+    "core": [
+        {"symbol": "USDT",   "address": "0x900101d06A7426441Ae63e9AB3B9b0F63Be145F1", "decimals": 6},
+    ],
+    "bsc": [
+        {"symbol": "USDT",   "address": "0x55d398326f99059fF775485246999027B3197955", "decimals": 18},
+        {"symbol": "CAKE",   "address": "0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82", "decimals": 18},
+    ],
+    "celo": [
+        {"symbol": "EURA",   "address": "0xC16B81Af351BA9e64C1a069E3Ab18c244A1E3049", "decimals": 18},
     ],
     "mantle": [
         {"symbol": "USDT",   "address": "0x201EBa5CC46D216Ce6DC03F6a759e8E766e956aE", "decimals": 6},
