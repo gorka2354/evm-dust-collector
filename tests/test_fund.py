@@ -61,6 +61,8 @@ class Chain:
         return (1).to_bytes(32, "big")  # transfer() answers true
 
     def estimate_gas(self, tx):
+        if tx.get("value", 0) > self.get_balance(tx["from"]):
+            raise ValueError("failed with 33554432 gas: insufficient funds for transfer")  # as a real node does
         return 50_000 if tx.get("data") else 21_000
 
     def get_transaction_count(self, address, block="latest"):
@@ -130,6 +132,16 @@ def test_top_ups_free_the_stuck_tokens_and_the_sweep_then_takes_them():
     rows = sweep.sweep_all(wallets(1, 2), DESTINATION, live=True, chains=CHAIN, w3_for=w3_for)
     assert sorted((r["wallet"], r["symbol"], r["status"]) for r in rows if r["symbol"] == "USDC") == [(A, "USDC", "sent"), (B, "USDC", "sent")]
     assert node.tokens[DESTINATION] == 8_000_000
+
+
+def test_an_empty_funder_is_told_how_much_to_send_before_anything_else(capsys):
+    node = Chain(native={}, tokens={A: 5_000_000, B: 3_000_000})
+    plan = sweep.fund_all(wallets(0, 1, 2), FUNDER, DESTINATION, chains=CHAIN, w3_for=lambda cfg: W3(node))
+    assert sorted((r["wallet"], r["status"]) for r in plan) == [(A, "funder short"), (B, "funder short")]
+    token_fee = int(50_000 * 1.2) * int(GWEI * 1.3)
+    hop = int(21_000 * 1.2) * int(GWEI * 1.3)
+    wanted = 2 * (token_fee * sweep.FUND_MARGIN + hop)
+    assert f"the funder needs {wanted / 10 ** 18:.6g} ETH in all, holds 0: send it {wanted / 10 ** 18:.6g} ETH more" in capsys.readouterr().out
 
 
 def test_a_funder_without_enough_sends_nothing_it_cannot_cover():
