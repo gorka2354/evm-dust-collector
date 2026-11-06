@@ -19,6 +19,7 @@ DESTINATION = Web3.to_checksum_address("0x" + "ab" * 20)
 TOKEN = Web3.to_checksum_address("0x" + "cd" * 20)
 GWEI = 10 ** 9
 ETHER = 10 ** 18
+SHIPPED_RECEIPT_POLL = sweep.RECEIPT_POLL  # read before any fixture patches it
 UPPER_BOUND = bytes(Web3.keccak(text="getL1FeeUpperBound(uint256)")[:4])
 L1_FEE = bytes(Web3.keccak(text="getL1Fee(bytes)")[:4])
 
@@ -40,6 +41,7 @@ class FakeEth:
         self.nonce = 5
         self.in_flight = 0
         self.mined = True
+        self.receipt_refusals = 0
         self.receipt_status = 1
         self.upper_bound_missing = False
         self.transfer_answer = 1     # what the token's transfer() returns
@@ -114,9 +116,12 @@ class FakeEth:
             from eth_account._utils.typed_transactions import TypedTransaction
         return TypedTransaction.from_bytes(raw).as_dict()
 
-    def wait_for_transaction_receipt(self, tx_hash, timeout):
+    def get_transaction_receipt(self, tx_hash):
+        if self.receipt_refusals:
+            self.receipt_refusals -= 1
+            raise ConnectionError("403 Client Error: Forbidden")  # a public node that has had enough
         if not self.mined:
-            raise TimeoutError("not mined")
+            raise LookupError("transaction not found")
         return type("Receipt", (), {"status": self.receipt_status})()
 
 
@@ -133,6 +138,8 @@ def prices(monkeypatch):
     monkeypatch.setitem(PRICES, "ETH", 2000.0)
     monkeypatch.setitem(PRICES, "USDC", 1.0)
     monkeypatch.setattr(sweep, "TOKENS", {"plain": [{"symbol": "USDC", "address": TOKEN, "decimals": 6}]})
+    monkeypatch.setattr(sweep, "RECEIPT_TIMEOUT", 0.2)  # a never-mined transaction gives up quickly here
+    monkeypatch.setattr(sweep, "RECEIPT_POLL", 0)
 
 
 def run(eth, live=False, key=KEY):
@@ -408,6 +415,45 @@ def test_a_chain_whose_node_is_down_or_on_another_chain_is_skipped_for_every_wal
     assert "down: node unreachable" in out
     assert "mislabelled: node answers for chain 999, not 3" in out
     assert other.sent == []
+
+
+def test_a_node_refusing_receipt_reads_for_a_while_still_ends_in_sent():
+    eth = FakeEth(balance=10 ** 15)
+    eth.receipt_refusals = 5
+    [row] = run(eth, live=True)
+    assert row["status"] == "sent"
+
+
+def test_receipts_are_polled_gently():
+    # web3's own wait polls every 0.1 s, which got public nodes to ban this machine.
+    # The fixture speeds polling up for these tests, so check the value as shipped.
+    assert SHIPPED_RECEIPT_POLL >= 1
+
+
+def test_a_chain_whose_first_rpc_refuses_is_swept_through_its_fallback(capsys):
+    class Broken:
+        @property
+        def eth(self):
+            raise ConnectionError("403 Client Error: Forbidden")
+
+    good = FakeEth(balance=10 ** 15)
+    nodes = {"https://first": Broken(), "https://second": FakeW3(good)}
+    chains = {"plain": {**CHAIN["plain"], "rpc": "https://first", "fallback_rpcs": ["https://second"]}}
+    rows = sweep.sweep_all([{"address": WALLET, "key": KEY}], DESTINATION, live=True, chains=chains,
+                           w3_for=lambda cfg: nodes[cfg["rpc"]])
+    assert [r["status"] for r in rows] == ["sent"]
+    assert len(good.sent) == 1
+    assert "plain: using https://second" in capsys.readouterr().out
+
+
+def test_a_fallback_on_another_chain_is_not_used():
+    wrong = FakeEth(balance=10 ** 15)
+    wrong.chain_id = 999
+    right = FakeEth(balance=10 ** 15)
+    nodes = {"https://first": FakeW3(wrong), "https://second": FakeW3(right)}
+    up, down = sweep.reachable_chains({"plain": {**CHAIN["plain"], "rpc": "https://first", "fallback_rpcs": ["https://second"]}},
+                                      lambda cfg: nodes[cfg["rpc"]])
+    assert up["plain"]["rpc"] == "https://second" and down == {}
 
 
 def test_when_no_chain_answers_nothing_is_swept_rather_than_everything(capsys):
