@@ -30,6 +30,12 @@ def owns(wallet):
     return wallet["key"] is not None and Account.from_key(wallet["key"]).address.lower() == wallet["address"].lower()
 
 
+def test_accounts_follow_the_standard_ethereum_path():
+    # What every BIP-44 wallet derives at m/44'/60'/0'/0/1 and /2 for the test phrase.
+    assert derive_from_seed(TEST_PHRASE, 1)[0] == "0x6Fac4D18c912343BF86fa7049364Dd4E424Ab9C0"
+    assert derive_from_seed(TEST_PHRASE, 2)[0] == "0xb6716976A3ebe8D39aCEB04372f22Ff8e6802D7A"
+
+
 def test_a_phrase_alone_is_its_first_account():
     w = parse_line(TEST_PHRASE)
     assert w["address"] == FIRST
