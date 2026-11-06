@@ -42,6 +42,12 @@ class FakeEth:
         self.mined = True
         self.receipt_status = 1
         self.upper_bound_missing = False
+        self.transfer_answer = 1     # what the token's transfer() returns
+        self.token_moves = True      # whether a mined token transfer empties the balance
+        self.lost_reply = False      # take the transaction, then lose the reply
+        self.l1_fee_next = None      # the L1 fee once a transaction is mined
+        self.mined_when_read = None  # a pending transaction is mined as the nonce is read, leaving this
+        self.known = set()
         self.calls = []
         self.sent = []
         self.account = Account
@@ -57,6 +63,8 @@ class FakeEth:
 
     def call(self, tx):
         if tx["to"].lower() == TOKEN.lower():
+            if bytes(tx["data"][:4]) == sweep.TRANSFER_SELECTOR:
+                return self.transfer_answer.to_bytes(32, "big")
             return self.token_balance.to_bytes(32, "big")
         self.calls.append(bytes(tx["data"]))
         if self.upper_bound_missing and tx["data"][:4] == UPPER_BOUND:
@@ -65,11 +73,16 @@ class FakeEth:
 
     def estimate_gas(self, tx):
         gas = self.token_gas if tx.get("data") else self.gas
+        if callable(gas):
+            gas = gas(tx["value"])
         if isinstance(gas, Exception):
             raise gas
         return gas
 
     def get_transaction_count(self, address, block="latest"):
+        if self.mined_when_read is not None:
+            self.balance, self.mined_when_read = self.mined_when_read, None
+            self.nonce, self.in_flight = self.nonce + self.in_flight, 0
         return self.nonce + (self.in_flight if block == "pending" else 0)
 
     def send_raw_transaction(self, raw):
@@ -78,10 +91,20 @@ class FakeEth:
         if tx["value"] + tx["gas"] * tx["maxFeePerGas"] + self.l1_fee > self.balance:
             raise ValueError("insufficient funds for gas * price + value")  # what a node answers
         self.sent.append((sender, raw))
+        self.known.add("0x" + bytes(Web3.keccak(raw)).hex())
         self.balance -= tx["value"] + tx["gas"] * self.base_fee + self.l1_fee
-        if Web3.to_checksum_address(tx["to"]) == TOKEN:
+        if Web3.to_checksum_address(tx["to"]) == TOKEN and self.token_moves:
             self.token_balance = 0
-        return bytes(32)
+        if self.l1_fee_next is not None:
+            self.l1_fee = self.l1_fee_next
+        if self.lost_reply:
+            raise TimeoutError("read timed out")
+        return Web3.keccak(raw)
+
+    def get_transaction(self, tx_hash):
+        if tx_hash not in self.known:
+            raise LookupError("transaction not found")
+        return {"hash": tx_hash}
 
     @staticmethod
     def decoded(raw):
@@ -176,6 +199,78 @@ def test_a_planned_token_transfer_leaves_its_fee_out_of_the_native_amount():
     native_fee = int(21_000 * 1.2) * int(GWEI * 1.3)
     assert [r["status"] for r in rows] == ["planned", "planned"]
     assert rows[1]["amount"] == pytest.approx((10 ** 15 - token_fee - native_fee) / ETHER)
+
+
+def test_a_reply_lost_after_the_node_took_the_transaction_keeps_its_hash():
+    eth = FakeEth(balance=10 ** 15)
+    eth.lost_reply = True
+    [row] = run(eth, live=True)
+    assert row["status"] == "sent"
+    assert row["tx"] in eth.known
+
+
+def test_a_transaction_the_node_refused_is_an_error_with_its_hash():
+    eth = FakeEth(balance=10 ** 15)
+
+    def refuse(raw):
+        raise ValueError("nonce too low")
+
+    eth.send_raw_transaction = refuse
+    [row] = run(eth, live=True)
+    assert row["status"] == "error: nonce too low"
+    assert row["tx"].startswith("0x") and len(row["tx"]) == 66
+
+
+def test_a_token_whose_transfer_answers_false_is_not_sent():
+    eth = FakeEth(balance=10 ** 15, token_balance=5_000_000)
+    eth.transfer_answer = 0
+    rows = run(eth, live=True)
+    assert [(r["symbol"], r["status"]) for r in rows] == [("USDC", "refused"), ("ETH", "sent")]
+    assert len(eth.sent) == 1
+
+
+def test_a_mined_token_transfer_that_left_the_balance_is_reported_not_moved():
+    eth = FakeEth(balance=10 ** 15, token_balance=5_000_000)
+    eth.token_moves = False
+    rows = run(eth, live=True)
+    assert [(r["symbol"], r["status"]) for r in rows] == [("USDC", "not moved"), ("ETH", "sent")]
+
+
+def test_the_native_transfer_after_a_token_uses_the_l1_fee_of_that_moment():
+    eth = FakeEth(balance=10 ** 15, token_balance=5_000_000, oracle=sweep.OP_STACK_ORACLE, l1_fee=7 * 10 ** 9)
+    eth.l1_fee_next = 5 * 10 ** 13
+    rows = run(eth, live=True)
+    assert [r["status"] for r in rows] == ["sent", "sent"]
+
+
+def test_native_gas_is_estimated_for_a_real_amount_not_one_wei():
+    eth = FakeEth(balance=10 ** 15, gas=lambda value: 21_187 if value == 1 else 43_504)
+    run(eth, live=True)
+    [(_, raw)] = eth.sent
+    assert FakeEth.decoded(raw)["gas"] >= 43_504
+
+
+def test_a_transaction_mined_while_the_wallet_is_read_leaves_no_stale_balance():
+    eth = FakeEth(balance=10 ** 15)
+    eth.in_flight = 1
+    eth.mined_when_read = 5 * 10 ** 14
+    [row] = run(eth, live=True)
+    assert row["status"] == "sent"
+    assert row["amount"] == pytest.approx((5 * 10 ** 14 - int(21_000 * 1.2) * int(GWEI * 1.3)) / ETHER)
+
+
+def test_every_unsure_transfer_is_printed_with_its_hash(capsys):
+    def row(status, tx):
+        return {"chain": "plain", "wallet": WALLET, "symbol": "ETH", "amount": 0.1, "usd": 1.0, "fee_usd": 0.0,
+                "status": status, "tx": tx}
+
+    sweep.print_sweep([row("pending", "0x" + "01" * 32), row("error: lost", "0x" + "02" * 32),
+                       row("not moved", "0x" + "03" * 32), row("sent", "0x" + "04" * 32)], live=True)
+    out = capsys.readouterr().out
+    assert "[PENDING] plain" in out and "0x" + "01" * 32 in out
+    assert "[ERROR] plain" in out and "0x" + "02" * 32 in out
+    assert "[NOT MOVED] plain" in out and "0x" + "03" * 32 in out
+    assert "0x" + "04" * 32 not in out  # a confirmed one goes to the report file, not the screen
 
 
 def test_a_reverted_transfer_is_reported_as_reverted(capsys):
@@ -313,6 +408,42 @@ def test_a_chain_whose_node_is_down_or_on_another_chain_is_skipped_for_every_wal
     assert "down: node unreachable" in out
     assert "mislabelled: node answers for chain 999, not 3" in out
     assert other.sent == []
+
+
+def test_when_no_chain_answers_nothing_is_swept_rather_than_everything(capsys):
+    class Broken:
+        @property
+        def eth(self):
+            raise ConnectionError("node down")
+
+    rows = sweep.sweep_all([{"address": WALLET, "key": KEY}], DESTINATION, live=True,
+                           chains={"down": {"id": 2, "rpc": "x", "native": "ETH", "decimals": 18}},
+                           w3_for=lambda cfg: Broken())
+    assert rows == []
+    assert "No chain left to sweep" in capsys.readouterr().out
+
+
+def test_no_chains_means_none_not_all():
+    assert sweep.sweep_wallet(WALLET, KEY, DESTINATION, chains={}, w3_for=lambda cfg: pytest.fail("touched a chain")) == []
+
+
+def test_only_the_listed_wallet_and_chain_pairs_are_touched():
+    eth = FakeEth(balance=10 ** 15)
+    chains = {**CHAIN, "other": {"id": 1, "rpc": "x", "native": "ETH", "decimals": 18}}
+    rows = sweep.sweep_all([{"address": WALLET, "key": KEY}, {"address": OTHER, "key": OTHER_KEY}], DESTINATION,
+                           live=True, chains=chains, w3_for=lambda cfg: FakeW3(eth), only={(WALLET, "other")})
+    assert [(r["wallet"], r["chain"], r["status"]) for r in rows] == [(WALLET, "other", "sent")]
+    assert [sender for sender, _ in eth.sent] == [WALLET]
+
+
+def test_the_report_lists_every_row_with_its_hash(tmp_path):
+    rows = [{"chain": "plain", "wallet": WALLET, "symbol": "ETH", "amount": 0.1, "usd": 200.0, "fee_usd": 0.01,
+             "status": "sent", "tx": "0x" + "ab" * 32}]
+    path = tmp_path / "report.csv"
+    sweep.write_report(rows, str(path))
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == ",".join(sweep.REPORT_FIELDS)
+    assert lines[1].endswith("sent," + "0x" + "ab" * 32)
 
 
 def test_many_wallets_are_planned_together():
