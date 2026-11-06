@@ -389,7 +389,7 @@ FUND_MARGIN = 2  # a top-up covers twice the worst-case fee: gas prices move bef
 
 
 def _moves_once_funded(r):
-    """Whether the sweep would move this stuck token once its wallet had gas: the sweep's own rule."""
+    """Whether the sweep would move this stuck token if its wallet had gas (by the sweep's own rule)."""
     return worth_sending(r["usd"], r["fee_usd"])
 
 
