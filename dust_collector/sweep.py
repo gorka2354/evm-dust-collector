@@ -85,8 +85,12 @@ def fee_params(w3):
     return price, {"gasPrice": price}
 
 
-def l1_fee_upper_bound(w3):
-    """The L1 data fee a small transaction can be billed, or 0 where gas covers everything."""
+def l1_fee_upper_bound(w3, cfg=None):
+    """The L1 data fee a small transaction can be billed, or 0 where gas covers everything.
+
+    On a chain whose config sets l1_fee_in_native (Mantle), the oracle's ETH
+    figure is converted at its tokenRatio().
+    """
     blob = b"\x01" * TX_SIZE_BYTES
     if w3.eth.get_code(Web3.to_checksum_address(OP_STACK_ORACLE)):
         oracle = Web3.to_checksum_address(OP_STACK_ORACLE)
@@ -94,7 +98,7 @@ def l1_fee_upper_bound(w3):
             fee = int.from_bytes(w3.eth.call({"to": oracle, "data": L1_FEE_UPPER_BOUND + TX_SIZE_BYTES.to_bytes(32, "big")}), "big")
         except Exception:  # older: the fee of a transaction-sized blob, doubled for margin
             fee = 2 * int.from_bytes(w3.eth.call({"to": oracle, "data": _l1_fee_call(blob)}), "big")
-        return fee * _token_ratio(w3, oracle)
+        return fee * _token_ratio(w3, oracle) if (cfg or {}).get("l1_fee_in_native") else fee
     if w3.eth.get_code(Web3.to_checksum_address(SCROLL_ORACLE)):
         return 2 * int.from_bytes(w3.eth.call({"to": Web3.to_checksum_address(SCROLL_ORACLE), "data": _l1_fee_call(blob)}), "big")
     return 0
@@ -218,7 +222,7 @@ def sweep_chain(w3, chain, cfg, wallet, key, to, live, rows, others=()):
     balance = w3.eth.get_balance(wallet)
 
     max_fee, fee_fields = fee_params(w3)
-    l1_fee = l1_fee_upper_bound(w3)
+    l1_fee = l1_fee_upper_bound(w3, cfg)
     sent = False
 
     for token, held in tokens:
@@ -240,13 +244,13 @@ def sweep_chain(w3, chain, cfg, wallet, key, to, live, rows, others=()):
         fee_usd = to_usd(native, fee / 10 ** decimals)
         if fee > balance:
             # What `fund` needs to unlock it: this fee, against the gas the wallet has.
-            row(symbol, held, dec, value_usd, fee_usd, "no gas", fee_wei=fee, native_wei=balance)
+            row(symbol, held, dec, value_usd, fee_usd, "no gas", gas=gas, native_wei=balance)
             continue
         if not worth_sending(value_usd, fee_usd):
             row(symbol, held, dec, value_usd, fee_usd, "not worth it")
             continue
         if not live:
-            row(symbol, held, dec, value_usd, fee_usd, "planned", fee_wei=fee)
+            row(symbol, held, dec, value_usd, fee_usd, "planned", gas=gas)
             balance -= fee
             continue
         tx = {"from": wallet, "to": contract, "value": 0, "data": data,
@@ -269,7 +273,7 @@ def sweep_chain(w3, chain, cfg, wallet, key, to, live, rows, others=()):
     if sent:
         # Fees move while a transfer is mined: the last one is built on fresh ones.
         max_fee, fee_fields = fee_params(w3)
-        l1_fee = l1_fee_upper_bound(w3)
+        l1_fee = l1_fee_upper_bound(w3, cfg)
 
     if balance:
         # Estimated for half the balance rather than 1 wei: code at the destination
@@ -334,7 +338,7 @@ def reachable_chains(chains, w3_for):
             if got != cfg["id"]:
                 why = why or f"node answers for chain {got}, not {cfg['id']}"
                 continue
-            age = time.time() - stamp if stamp else 0
+            age = time.time() - stamp if stamp is not None else 0
             if age > MAX_BLOCK_AGE:
                 why = why or f"no new block for {age / 86400:.0f} day(s): the chain looks halted"
                 continue
@@ -384,31 +388,43 @@ def sweep_all(wallets, to, live=False, workers=8, chains=None, w3_for=None, only
 FUND_MARGIN = 2  # a top-up covers twice the worst-case fee: gas prices move before the sweep runs
 
 
-def funding_needs(rows):
-    """From a sweep plan: for each wallet and chain with tokens stuck for lack of gas, the top-up that frees them.
+def _moves_once_funded(r):
+    """Whether the sweep would move this stuck token once its wallet had gas: the sweep's own rule."""
+    return worth_sending(r["usd"], r["fee_usd"])
 
-    Returns [{"wallet", "chain", "need_wei", "usd"}], usd being what the stuck tokens are worth.
+
+def funding_needs(rows):
+    """From a sweep plan: wallets and chains whose stuck tokens a top-up would free.
+
+    Only tokens the sweep would then move count, each on its own: two of 4
+    cents don't make one worth freeing. Returns [{"wallet", "chain", "gas",
+    "transfers", "native_wei", "usd"}]: the gas of those transfers, how many
+    there are (each pays the L1 fee where there is one), the gas the wallet
+    already has, and what the freed tokens are worth.
     """
     stuck = {}
     for r in rows:
-        if r["status"] != "no gas":
+        if r["status"] != "no gas" or not _moves_once_funded(r):
             continue
-        entry = stuck.setdefault((r["wallet"], r["chain"]), {"fees": 0, "native": r["native_wei"], "usd": 0.0})
-        entry["fees"] += r["fee_wei"]
-        entry["native"] = min(entry["native"], r["native_wei"])
-        entry["usd"] += r["usd"]
-    needs = []
-    for (wallet, chain), e in stuck.items():
-        need = e["fees"] * FUND_MARGIN - e["native"]
-        if need > 0:
-            needs.append({"wallet": wallet, "chain": chain, "need_wei": need, "usd": e["usd"]})
-    return needs
+        e = stuck.setdefault((r["wallet"], r["chain"]), {"wallet": r["wallet"], "chain": r["chain"], "gas": 0,
+                                                          "transfers": 0, "native_wei": r["native_wei"], "usd": 0.0})
+        e["gas"] += r["gas"]
+        e["transfers"] += 1
+        e["native_wei"] = min(e["native_wei"], r["native_wei"])
+        e["usd"] += r["usd"]
+    return list(stuck.values())
 
 
-def fund_chain(w3, chain, cfg, funder, key, needs, live, rows, reserve=0, others=()):
+def top_up(need, max_fee, l1_fee):
+    """What to send a wallet so its freed transfers can pay at these fees: FUND_MARGIN times their cost, less what it has."""
+    return max((need["gas"] * max_fee + need["transfers"] * l1_fee) * FUND_MARGIN - need["native_wei"], 0)
+
+
+def fund_chain(w3, chain, cfg, funder, key, needs, live, rows, own=None, others=()):
     """Top up, from `funder`, each wallet in `needs` on one chain. Appends one row per top-up.
 
-    `reserve` stays with the funder: the gas its own tokens need to leave.
+    Amounts are priced at this moment's fees, not the plan's. `own` is the gas
+    and transfer count of the funder's own tokens: what they need stays with it.
     A top-up goes only where the tokens it frees are worth it.
     """
     native, decimals = cfg["native"], cfg["decimals"]
@@ -424,13 +440,16 @@ def fund_chain(w3, chain, cfg, funder, key, needs, live, rows, reserve=0, others
         row(funder, 0, 0, 0.0, "in flight")
         return
     held = w3.eth.get_balance(funder)
-    balance = held - reserve
     max_fee, fee_fields = fee_params(w3)
-    l1_fee = l1_fee_upper_bound(w3)
+    l1_fee = l1_fee_upper_bound(w3, cfg)
+    own = own or {"gas": 0, "transfers": 0}
+    reserve = (own["gas"] * max_fee + own["transfers"] * l1_fee) * FUND_MARGIN
+    balance = held - reserve
     wanted = reserve  # all the funder needs: its own reserve plus every top-up worth sending
     for need in needs:
-        to, amount = need["wallet"], need["need_wei"]
-        if to == funder:
+        to = need["wallet"]
+        amount = top_up(need, max_fee, l1_fee)
+        if to == funder or not amount:
             continue
         # Value left out of the estimate: a node refuses one for more than the
         # funder holds, and the plan has to say how much to send it first.
@@ -454,7 +473,9 @@ def fund_chain(w3, chain, cfg, funder, key, needs, live, rows, reserve=0, others
         if status not in ("sent", "reverted"):
             return  # unsure: the next top-up waits for a re-run
         nonce += 1
-        balance = w3.eth.get_balance(funder) - reserve
+        # Counted, not read back: a node behind the one that gave the receipt
+        # can still show the old balance and let the reserve go.
+        balance -= amount + fee
     if not live:
         short = max(wanted - held, 0)
         more = f"send it {short / 10 ** decimals:.6g} {native} more" if short else "enough"
@@ -465,15 +486,17 @@ def fund_chain(w3, chain, cfg, funder, key, needs, live, rows, reserve=0, others
 def fund_all(wallets, funder, to, live=False, chains=None, w3_for=None):
     """Plan the sweep to `to`, then top up from `funder` every wallet whose tokens it found stuck for lack of gas.
 
-    Returns one row per top-up. `to` only shapes the gas estimates: a token
-    transfer costs more to an address that never held the token.
+    Returns one row per top-up. `to` only shapes the gas estimates (a token
+    transfer costs more to an address that never held the token) and is left
+    out of the plan: its own tokens have nowhere to go.
     """
-    funder = Web3.to_checksum_address(funder)
+    funder, to = Web3.to_checksum_address(funder), Web3.to_checksum_address(to)
     by_address = {Web3.to_checksum_address(w["address"]): w for w in wallets}
     if not by_address.get(funder, {}).get("key"):
         raise ValueError("the funder must be one of the loaded wallets, with its key")
     w3_for = w3_for or (lambda cfg: get_w3(cfg["rpc"], timeout=20))
-    plan = sweep_all([{"address": a, "key": None} for a in by_address], to, live=False, chains=chains, w3_for=w3_for)
+    sources = [{"address": a, "key": None} for a in by_address if a != to]
+    plan = sweep_all(sources, to, live=False, chains=chains, w3_for=w3_for)
     needs = funding_needs(plan)
     rows = []
     if not needs:
@@ -482,12 +505,13 @@ def fund_all(wallets, funder, to, live=False, chains=None, w3_for=None):
     up, _ = reachable_chains({c: asked[c] for c in {n["chain"] for n in needs}}, w3_for)
     for chain, cfg in up.items():
         on_chain = sorted((n for n in needs if n["chain"] == chain), key=lambda n: -n["usd"])
-        # The funder's own tokens, stuck or not, keep the gas they need to leave.
-        own = sum(r.get("fee_wei", 0) for r in plan if r["wallet"] == funder and r["chain"] == chain
-                  and r["status"] in ("planned", "no gas"))
+        # The funder's own tokens that will move, stuck or not, keep the gas they need.
+        mine = [r for r in plan if r["wallet"] == funder and r["chain"] == chain and "gas" in r
+                and (r["status"] == "planned" or (r["status"] == "no gas" and _moves_once_funded(r)))]
+        own = {"gas": sum(r["gas"] for r in mine), "transfers": len(mine)}
         try:
             fund_chain(w3_for(cfg), chain, cfg, funder, by_address[funder]["key"], on_chain, live, rows,
-                       reserve=own * FUND_MARGIN, others=_other_nodes(cfg, w3_for))
+                       own=own, others=_other_nodes(cfg, w3_for))
         except Exception as e:
             rows.append({"chain": chain, "wallet": funder, "symbol": cfg["native"], "amount": 0, "usd": 0,
                          "fee_usd": 0, "status": f"error: {_short(e)}", "tx": None, "frees_usd": 0.0})

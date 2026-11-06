@@ -124,7 +124,9 @@ def main(argv=None):
             return 1
         sweep.print_sweep(plan, live=False, title="GAS TOP-UPS")
         freed = sum(r["frees_usd"] for r in plan if r["status"] == "planned")
-        print(f"  Tokens these top-ups free: ${freed:.2f}")
+        waiting = sum(r["frees_usd"] for r in plan if r["status"] == "funder short")
+        print(f"  Tokens these top-ups free: ${freed:.2f}"
+              + (f", and ${waiting:.2f} more once the funder holds enough" if waiting else ""))
         if not args.live:
             print("\n  Dry run: nothing was sent. Add --live to send.")
             return 0
@@ -141,7 +143,14 @@ def main(argv=None):
             return 1
         rows = sweep.fund_all(wallets, args.funder, to, live=True, chains=chains)
         sweep.print_sweep(rows, live=True, title="GAS TOP-UPS")
-        sweep.write_report(rows, report)
+        try:
+            sweep.write_report(rows, report)
+        except OSError as e:
+            print(f"\n[!] Could not write {report} ({e}). Every top-up with its hash:")
+            for r in rows:
+                if r["tx"]:
+                    print(f"  {r['chain']} {r['wallet']} {r['symbol']} {r['status']} {r['tx']}")
+            return 1
         print(f"\n  Every top-up with its hash: {report}")
         print("  Next: run sweep again; the freed tokens are in its plan now.")
         return 0

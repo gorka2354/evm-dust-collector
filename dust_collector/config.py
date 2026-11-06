@@ -41,7 +41,8 @@ CHAINS = {
     "linea":      {"id": 59144,    "rpc": "https://rpc.linea.build",                        "native": "ETH",  "decimals": 18, "bridge": "relay"},
     "scroll":     {"id": 534352,   "rpc": "https://rpc.scroll.io",                          "native": "ETH",  "decimals": 18, "bridge": "relay"},
     "gnosis":     {"id": 100,      "rpc": "https://rpc.gnosischain.com",                    "native": "xDAI", "decimals": 18, "bridge": "relay"},
-    "mantle":     {"id": 5000,     "rpc": "https://rpc.mantle.xyz",                         "native": "MNT",  "decimals": 18, "bridge": "relay"},
+    "mantle":     {"id": 5000,     "rpc": "https://rpc.mantle.xyz",                         "native": "MNT",  "decimals": 18, "bridge": "relay",
+                   "l1_fee_in_native": True},  # its oracle quotes ETH, the chain bills MNT
     "celo":       {"id": 42220,    "rpc": "https://forno.celo.org",                         "native": "CELO", "decimals": 18, "bridge": "relay"},
     "zetachain":  {"id": 7000,     "rpc": "https://zetachain-evm.blockpi.network/v1/rpc/public", "native": "ZETA", "decimals": 18, "bridge": "relay"},
     "manta":      {"id": 169,      "rpc": "https://pacific-rpc.manta.network/http",         "native": "ETH",  "decimals": 18, "bridge": "relay"},
