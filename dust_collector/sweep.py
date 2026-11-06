@@ -401,7 +401,9 @@ def funding_needs(rows):
     """From a sweep plan: wallets and chains whose stuck tokens a top-up would free.
 
     Only tokens the sweep would then move count, each on its own: two of 4
-    cents don't make one worth freeing. Returns [{"wallet", "chain", "gas",
+    cents don't make one worth freeing. A token with no price at all (no live
+    one, no "usd" in config) can't justify spending the funder's gas, so it
+    never counts, though a sweep moves it on cheap gas. Returns [{"wallet", "chain", "gas",
     "transfers", "native_wei", "usd"}]: the gas of those transfers, how many
     there are (each pays the L1 fee where there is one), the gas the wallet
     already has, and what the freed tokens are worth.

@@ -135,6 +135,10 @@ def test_the_top_up_covers_every_stuck_token_twice_at_the_fees_of_the_moment_les
     assert sweep.top_up(need, max_fee=30, l1_fee=7) == (150 * 30 + 2 * 7) * sweep.FUND_MARGIN - 30
 
 
+def test_a_token_without_any_price_never_earns_a_top_up():
+    assert sweep.funding_needs([stuck(A, 100, 0.0)]) == []
+
+
 def test_tokens_the_sweep_would_leave_anyway_free_nothing_even_together():
     # Two tokens of 4 cents: each under the sweep's minimum, so funding them moves nothing.
     assert sweep.funding_needs([stuck(A, 100, 0.04), stuck(A, 100, 0.04)]) == []
