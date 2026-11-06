@@ -44,6 +44,9 @@ class Chain:
         self.gas_price = base_fee
         self.nonces = {}
         self.sent = []
+        self.txs = []           # every accepted transaction, decoded
+        self.value_gas = {}     # recipient -> gas a transfer with value costs (an EIP-7702 account, say)
+        self.on_send = None     # called after each accepted transaction: fees can move
 
     def get_balance(self, address):
         return self.native.get(address, 0)
@@ -63,7 +66,9 @@ class Chain:
     def estimate_gas(self, tx):
         if tx.get("value", 0) > self.get_balance(tx["from"]):
             raise ValueError("failed with 33554432 gas: insufficient funds for transfer")  # as a real node does
-        return 50_000 if tx.get("data") else 21_000
+        if tx.get("data"):
+            return 50_000
+        return self.value_gas.get(tx["to"], 21_000) if tx.get("value") else 21_000
 
     def get_transaction_count(self, address, block="latest"):
         return self.nonces.get(address, 0)
@@ -73,6 +78,8 @@ class Chain:
         tx = decoded(raw)
         if tx["value"] + tx["gas"] * tx["maxFeePerGas"] > self.get_balance(sender):
             raise ValueError("insufficient funds for gas * price + value")
+        if tx["maxFeePerGas"] < self.base_fee:
+            raise ValueError("max fee per gas less than block base fee")
         assert tx["nonce"] == self.nonces.get(sender, 0), "nonce out of order"
         self.nonces[sender] = tx["nonce"] + 1
         self.native[sender] -= tx["value"] + tx["gas"] * self.base_fee
@@ -86,6 +93,9 @@ class Chain:
         else:
             self.native[to] = self.native.get(to, 0) + tx["value"]
         self.sent.append((sender, to, tx["value"]))
+        self.txs.append(tx)
+        if self.on_send:
+            self.on_send(self)
         return Web3.keccak(raw)
 
     def get_transaction_receipt(self, tx_hash):
@@ -169,6 +179,15 @@ def test_tokens_not_worth_their_top_up_get_none():
     assert node.sent == []
 
 
+def test_a_token_the_sweep_would_move_still_gets_no_top_up_costing_too_much_of_it():
+    # $1 of USDC: its own $0.16 fee passes the sweep's rule, but a top-up of twice that plus the
+    # funder's own fee comes to $0.38, over a quarter of what it frees.
+    node = Chain(native={FUNDER: 10 ** 16}, tokens={A: 1_000_000})
+    rows = sweep.fund_all(wallets(0, 1), FUNDER, DESTINATION, live=True, chains=CHAIN, w3_for=lambda cfg: W3(node))
+    assert [(r["wallet"], r["status"]) for r in rows] == [(A, "not worth it")]
+    assert node.sent == []
+
+
 def test_the_funder_keeps_what_its_own_stuck_tokens_need():
     token_fee = int(50_000 * 1.2) * int(GWEI * 1.3)
     own_need = token_fee * sweep.FUND_MARGIN
@@ -189,6 +208,42 @@ def test_a_top_up_is_priced_at_the_gas_price_it_is_sent_at():
     [(sender, to, value)] = node.sent
     assert (sender, to) == (FUNDER, A)
     assert value == int(50_000 * 1.2) * int(3 * GWEI * 1.3) * sweep.FUND_MARGIN
+
+
+def triple_the_gas_price(node):
+    node.base_fee = node.gas_price = 3 * GWEI
+
+
+def test_gas_dearer_after_one_top_up_prices_the_next_one_afresh():
+    node = Chain(native={FUNDER: 10 ** 16}, tokens={A: 5_000_000, B: 5_000_000})
+    node.on_send = triple_the_gas_price
+    rows = sweep.fund_all(wallets(0, 1, 2), FUNDER, DESTINATION, live=True, chains=CHAIN, w3_for=lambda cfg: W3(node))
+    assert [r["status"] for r in rows] == ["sent", "sent"]
+    first, second = node.txs
+    assert second["maxFeePerGas"] >= int(3 * GWEI * 1.3)
+    assert second["value"] == int(50_000 * 1.2) * int(3 * GWEI * 1.3) * sweep.FUND_MARGIN
+
+
+def test_gas_dearer_after_one_top_up_cannot_eat_into_the_funders_reserve():
+    token_fee = int(50_000 * 1.2) * int(GWEI * 1.3)
+    hop = int(21_000 * 1.2) * int(GWEI * 1.3)
+    reserve = token_fee * sweep.FUND_MARGIN  # the funder's own token, at 1 gwei
+    # At 1 gwei: room for its reserve and both top-ups. At 3 gwei the second no longer fits.
+    node = Chain(native={FUNDER: reserve + 2 * (token_fee * sweep.FUND_MARGIN + hop)},
+                 tokens={FUNDER: 5_000_000, A: 5_000_000, B: 5_000_000})
+    node.on_send = triple_the_gas_price
+    rows = sweep.fund_all(wallets(0, 1, 2), FUNDER, DESTINATION, live=True, chains=CHAIN, w3_for=lambda cfg: W3(node))
+    assert [r["status"] for r in rows] == ["sent", "funder short"]
+    own_need_now = int(50_000 * 1.2) * int(3 * GWEI * 1.3)
+    assert node.native[FUNDER] >= own_need_now
+
+
+def test_a_top_up_to_an_account_with_code_gets_the_gas_its_value_costs():
+    node = Chain(native={FUNDER: 10 ** 16}, tokens={A: 5_000_000})
+    node.value_gas[A] = 79_495  # an EIP-7702 account whose receive path stores when value comes in
+    sweep.fund_all(wallets(0, 1), FUNDER, DESTINATION, live=True, chains=CHAIN, w3_for=lambda cfg: W3(node))
+    [tx] = node.txs
+    assert tx["gas"] >= 79_495
 
 
 def test_a_node_showing_the_old_balance_after_a_top_up_cannot_spend_the_reserve():
