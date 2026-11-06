@@ -57,11 +57,21 @@ def to_usd(symbol, amount_human):
     return amount_human * price_of(symbol)
 
 
+def token_price(token):
+    """USD per whole token of a TOKENS entry, 0 if unknown.
+
+    The live price of its "price_of" symbol (or its own) comes first; a pool
+    share with no market price can carry an approximate "usd" instead, used
+    only to judge whether moving it is worth the fee.
+    """
+    return price_of(token.get("price_of", token["symbol"])) or token.get("usd", 0.0)
+
+
 def token_usd(token, amount_human):
-    """USD value of a TOKENS entry's amount, priced as its "price_of" symbol if it names one."""
-    return to_usd(token.get("price_of", token["symbol"]), amount_human)
+    """USD value of a TOKENS entry's amount."""
+    return amount_human * token_price(token)
 
 
 def token_priced(token):
     """Whether a TOKENS entry has any price to judge it by."""
-    return price_of(token.get("price_of", token["symbol"])) > 0
+    return token_price(token) > 0
