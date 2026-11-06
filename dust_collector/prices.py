@@ -15,7 +15,7 @@ PRICES = {
     "ETH": 3000.0, "POL": 0.40, "BNB": 600.0, "AVAX": 25.0,
     "FTM": 0.70, "MNT": 0.70, "CELO": 0.50, "ZETA": 0.30,
     "CORE": 0.80, "G": 0.04, "S": 0.50, "SEI": 0.30,
-    "BTC": 75000.0, "CAKE": 1.90,
+    "BTC": 75000.0, "CAKE": 1.90, "CYBER": 0.30,
     # Stables / pegged
     "xDAI": 1.0, "USDC": 1.0, "USDC.e": 1.0, "USDT": 1.0,
     "EURA": 1.08, "MIM": 1.0, "GHO": 1.0, "DAI": 1.0,
@@ -27,7 +27,7 @@ COINGECKO_IDS = {
     "AVAX": "avalanche-2", "FTM": "fantom", "MNT": "mantle",
     "CELO": "celo", "ZETA": "zetachain", "CORE": "coredaoorg",
     "S": "sonic-3", "SEI": "sei-network",
-    "BTC": "bitcoin", "CAKE": "pancakeswap-token",
+    "BTC": "bitcoin", "CAKE": "pancakeswap-token", "CYBER": "cyberconnect",
 }
 
 
