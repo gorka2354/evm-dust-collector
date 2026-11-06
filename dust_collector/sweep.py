@@ -10,6 +10,7 @@ balance)`. Nothing from an outside API goes into them.
 """
 
 import concurrent.futures
+import csv
 
 from web3 import Web3
 
@@ -93,10 +94,27 @@ def _token_balance(w3, token, wallet):
     return int.from_bytes(w3.eth.call({"to": Web3.to_checksum_address(token), "data": data}), "big")
 
 
+def _known(w3, tx_hash):
+    try:
+        return w3.eth.get_transaction(tx_hash) is not None
+    except Exception:
+        return False
+
+
 def _send(w3, tx, key):
-    """Sign locally, broadcast, wait. Returns (hash, "sent" | "reverted" | "pending")."""
+    """Sign locally, broadcast, wait. Returns (hash, status): sent, reverted, pending or "error: ...".
+
+    The hash comes from the signed bytes, so it is kept even when the node's
+    reply to the broadcast is lost.
+    """
     signed = w3.eth.account.sign_transaction(tx, key)
-    tx_hash = "0x" + bytes(w3.eth.send_raw_transaction(raw_tx(signed))).hex()
+    tx_hash = "0x" + bytes(signed.hash).hex()
+    try:
+        w3.eth.send_raw_transaction(raw_tx(signed))
+    except Exception as e:
+        # Refused, or taken with the reply lost: only the node can tell which.
+        if not _known(w3, tx_hash):
+            return tx_hash, f"error: {_short(e)}"
     try:
         receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=RECEIPT_TIMEOUT)
     except Exception:
@@ -139,9 +157,12 @@ def sweep_chain(w3, chain, cfg, wallet, key, to, live, rows):
         # Something sent earlier isn't mined yet, and the balance doesn't show its cost.
         row(native, balance, decimals, to_usd(native, balance / 10 ** decimals), 0, "in flight")
         return
+    # Read again: a transaction mined while the nonces were read has changed it.
+    balance = w3.eth.get_balance(wallet)
 
     max_fee, fee_fields = fee_params(w3)
     l1_fee = l1_fee_upper_bound(w3)
+    sent = False
 
     for token, held in tokens:
         symbol, dec = token["symbol"], token["decimals"]
@@ -150,8 +171,13 @@ def sweep_chain(w3, chain, cfg, wallet, key, to, live, rows):
         data = transfer_data(to, held)
         try:
             gas = int(w3.eth.estimate_gas({"from": wallet, "to": contract, "data": data}) * 1.2)
+            answer = bytes(w3.eth.call({"from": wallet, "to": contract, "data": data}))
         except Exception as e:
             row(symbol, held, dec, value_usd, 0, f"error: {_short(e)}")
+            continue
+        if len(answer) == 32 and not int.from_bytes(answer, "big"):
+            # transfer() answers false without reverting: it would cost gas and move nothing.
+            row(symbol, held, dec, value_usd, 0, "refused")
             continue
         fee = gas * max_fee + l1_fee
         fee_usd = to_usd(native, fee / 10 ** decimals)
@@ -168,16 +194,24 @@ def sweep_chain(w3, chain, cfg, wallet, key, to, live, rows):
         tx = {"from": wallet, "to": contract, "value": 0, "data": data,
               "gas": gas, "nonce": nonce, "chainId": cfg["id"], **fee_fields}
         tx_hash, status = _send(w3, tx, key)
+        if status == "sent" and _token_balance(w3, token["address"], wallet) >= held:
+            status = "not moved"  # mined, yet the balance is still there
         row(symbol, held, dec, value_usd, fee_usd, status, tx_hash)
-        if status == "pending":
-            return  # the native balance waits until this one settles
+        if status not in ("sent", "reverted", "not moved"):
+            return  # pending or unknown: the native balance waits until it settles
         nonce += 1
+        sent = True
         balance = w3.eth.get_balance(wallet)
 
+    if sent:
+        # Fees move while a transfer is mined: the last one is built on fresh ones.
+        max_fee, fee_fields = fee_params(w3)
+        l1_fee = l1_fee_upper_bound(w3)
+
     if balance:
-        # Gas for a native transfer doesn't depend on the amount; a contract at
-        # the destination (such as an EIP-7702 account) can make it more than 21000.
-        gas = int(w3.eth.estimate_gas({"from": wallet, "to": to, "value": 1}) * 1.2)
+        # Estimated for half the balance rather than 1 wei: code at the destination
+        # (an EIP-7702 account, say) can take another path for a real amount.
+        gas = int(w3.eth.estimate_gas({"from": wallet, "to": to, "value": max(balance // 2, 1)}) * 1.2)
         amount = native_send_amount(balance, gas, max_fee, l1_fee)
         value_usd = to_usd(native, amount / 10 ** decimals)
         fee_usd = to_usd(native, (balance - amount) / 10 ** decimals)
@@ -192,13 +226,19 @@ def sweep_chain(w3, chain, cfg, wallet, key, to, live, rows):
             row(native, amount, decimals, value_usd, fee_usd, status, tx_hash)
 
 
-def sweep_wallet(wallet, key, to, live=False, chains=None, w3_for=None):
-    """Every configured chain for one wallet. Errors stay on their chain."""
+def sweep_wallet(wallet, key, to, live=False, chains=None, w3_for=None, only=None):
+    """The given chains (all configured ones if None) for one wallet. Errors stay on their chain.
+
+    `only`, if given, is the set of (wallet, chain) pairs that may be touched,
+    so a live run acts on nothing its plan didn't list.
+    """
     wallet = Web3.to_checksum_address(wallet)
     to = Web3.to_checksum_address(to)
     w3_for = w3_for or (lambda cfg: get_w3(cfg["rpc"], timeout=20))
     rows = []
-    for chain, cfg in (chains or CHAINS).items():
+    for chain, cfg in (CHAINS if chains is None else chains).items():
+        if only is not None and (wallet, chain) not in only:
+            continue
         try:
             sweep_chain(w3_for(cfg), chain, cfg, wallet, key, to, live, rows)
         except Exception as e:
@@ -223,8 +263,12 @@ def reachable_chains(chains, w3_for):
     return up, {name: why for name, why in verdicts.items() if why}
 
 
-def sweep_all(wallets, to, live=False, workers=8, chains=None, w3_for=None):
-    """Sweep many wallets in parallel. Each wallet's own transactions stay in order."""
+def sweep_all(wallets, to, live=False, workers=8, chains=None, w3_for=None, only=None):
+    """Sweep many wallets in parallel. Each wallet's own transactions stay in order.
+
+    `chains` defaults to every configured chain; `only` limits the run to
+    (wallet, chain) pairs, as sweep_wallet describes.
+    """
     to = Web3.to_checksum_address(to)
     sources = {Web3.to_checksum_address(w["address"]) for w in wallets}
     if to in sources:
@@ -233,12 +277,15 @@ def sweep_all(wallets, to, live=False, workers=8, chains=None, w3_for=None):
         missing = sum(1 for w in wallets if not w.get("key"))
         raise ValueError(f"{missing} wallet(s) have no key: a live sweep needs every key")
     w3_for = w3_for or (lambda cfg: get_w3(cfg["rpc"], timeout=20))
-    chains, down = reachable_chains(chains or CHAINS, w3_for)
+    chains, down = reachable_chains(CHAINS if chains is None else chains, w3_for)
     for name, why in sorted(down.items()):
         print(f"  [!] {name}: {why} - skipped")
+    if not chains:
+        print("  [!] No chain left to sweep.")
+        return []
     rows = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(sweep_wallet, w["address"], w.get("key"), to, live, chains, w3_for) for w in wallets]
+        futures = [pool.submit(sweep_wallet, w["address"], w.get("key"), to, live, chains, w3_for, only) for w in wallets]
         for done, future in enumerate(concurrent.futures.as_completed(futures), 1):
             rows += future.result()
             if done % 10 == 0:
@@ -274,7 +321,24 @@ def print_sweep(rows, live):
             detail = f"  ({e['detail'][:50]})" if e["detail"] else ""
             print(f"  {chain:<12} {symbol:<7} {status:<13} {e['count']:>4}  ${e['usd']:.2f}{detail}")
     for r in rows:
-        if r["status"] in ("reverted", "pending"):
-            print(f"  [{r['status'].upper()}] {r['chain']} {r['wallet'][:10]}... {r['symbol']}: {r['tx']}")
+        if r["tx"] and r["status"] != "sent":
+            # Broadcast, or maybe broadcast: worth a look on an explorer before a re-run.
+            label = r["status"].split(":")[0].upper()
+            print(f"  [{label}] {r['chain']} {r['wallet'][:10]}... {r['symbol']}: {r['tx']}")
     print("=" * 72)
     return total
+
+
+REPORT_FIELDS = ["chain", "wallet", "symbol", "amount", "usd", "fee_usd", "status", "tx"]
+
+
+def write_report(rows, path):
+    """Every row with its transaction hash, as CSV: what went where, to check on an explorer.
+
+    Holds addresses, amounts and hashes only, all of them public on-chain.
+    """
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=REPORT_FIELDS)
+        writer.writeheader()
+        for r in sorted(rows, key=lambda r: (r["chain"], r["wallet"], r["symbol"])):
+            writer.writerow({field: r.get(field) for field in REPORT_FIELDS})
