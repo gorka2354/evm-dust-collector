@@ -14,7 +14,6 @@
 import argparse
 import os
 import sys
-import time
 
 from web3 import Web3
 
@@ -135,14 +134,27 @@ def main(argv=None):
         if not args.yes and input(question).strip().lower() != "yes":
             print("Cancelled, nothing was sent.")
             return 1
+        # The report file is made before the first transfer: if this folder
+        # can't take it, the run stops while nothing has gone.
+        try:
+            report = sweep.new_report()
+        except OSError as e:
+            print(f"[!] Can't create the report file here ({e}). Nothing was sent.")
+            return 1
         try:
             rows = sweep.sweep_all(senders, to, live=True, chains={c: chains[c] for _, c in planned}, only=planned)
         except ValueError as e:
             print(f"[!] {e}")
             return 1
         sweep.print_sweep(rows, live=True)
-        report = os.path.abspath(f"sweep-{time.strftime('%Y%m%d-%H%M%S')}.csv")
-        sweep.write_report(rows, report)
+        try:
+            sweep.write_report(rows, report)
+        except OSError as e:
+            print(f"\n[!] Could not write {report} ({e}). Every transfer with its hash:")
+            for r in rows:
+                if r["tx"]:
+                    print(f"  {r['chain']} {r['wallet']} {r['symbol']} {r['status']} {r['tx']}")
+            return 1
         print(f"\n  Every transfer with its hash: {report}")
         return 0
 

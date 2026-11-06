@@ -11,6 +11,8 @@ balance)`. Nothing from an outside API goes into them.
 
 import concurrent.futures
 import csv
+import os
+import time
 
 from web3 import Web3
 
@@ -139,6 +141,7 @@ def sweep_chain(w3, chain, cfg, wallet, key, to, live, rows):
     def row(symbol, amount, dec, value_usd, fee_usd, status, tx=None):
         rows.append({"chain": chain, "wallet": wallet, "symbol": symbol, "amount": amount / 10 ** dec,
                      "usd": value_usd, "fee_usd": fee_usd, "status": status, "tx": tx})
+        return rows[-1]
 
     balance = w3.eth.get_balance(wallet)
     tokens = []
@@ -194,9 +197,14 @@ def sweep_chain(w3, chain, cfg, wallet, key, to, live, rows):
         tx = {"from": wallet, "to": contract, "value": 0, "data": data,
               "gas": gas, "nonce": nonce, "chainId": cfg["id"], **fee_fields}
         tx_hash, status = _send(w3, tx, key)
-        if status == "sent" and _token_balance(w3, token["address"], wallet) >= held:
-            status = "not moved"  # mined, yet the balance is still there
-        row(symbol, held, dec, value_usd, fee_usd, status, tx_hash)
+        # Recorded before any further call to the node, so a failing call can't lose the hash.
+        sent_row = row(symbol, held, dec, value_usd, fee_usd, status, tx_hash)
+        if status == "sent":
+            try:
+                if _token_balance(w3, token["address"], wallet) >= held:
+                    sent_row["status"] = status = "not moved"  # mined, yet the balance is still there
+            except Exception:
+                pass  # the receipt said success; only the extra check couldn't run
         if status not in ("sent", "reverted", "not moved"):
             return  # pending or unknown: the native balance waits until it settles
         nonce += 1
@@ -330,6 +338,24 @@ def print_sweep(rows, live):
 
 
 REPORT_FIELDS = ["chain", "wallet", "symbol", "amount", "usd", "fee_usd", "status", "tx"]
+
+
+def new_report(directory=".", stamp=None):
+    """Create an empty report file under a name no earlier run used, and return its path.
+
+    Made before anything is sent, so a folder it can't be written to stops
+    the run while nothing has gone yet.
+    """
+    stamp = stamp or time.strftime("%Y%m%d-%H%M%S")
+    for n in range(1000):
+        path = os.path.abspath(os.path.join(directory, f"sweep-{stamp}{f'-{n}' if n else ''}.csv"))
+        try:
+            with open(path, "x", newline="", encoding="utf-8") as f:
+                csv.DictWriter(f, fieldnames=REPORT_FIELDS).writeheader()
+            return path
+        except FileExistsError:
+            continue
+    raise OSError(f"no free report name for sweep-{stamp}")
 
 
 def write_report(rows, path):

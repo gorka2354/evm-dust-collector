@@ -80,6 +80,26 @@ def test_live_sends_only_the_planned_pairs_from_wallets_with_a_key(sweeps, monke
     assert [(r["wallet"], r["chain"], r["status"], r["tx"]) for r in rows] == [(WALLET, "arbitrum", "sent", "0x" + "cd" * 32)]
 
 
+def test_a_folder_that_cannot_take_the_report_stops_the_run_before_anything_is_sent(sweeps, monkeypatch, capsys):
+    def refuse(*args, **kwargs):
+        raise PermissionError("access denied")
+
+    monkeypatch.setattr(cli.sweep, "new_report", refuse)
+    assert cli.main(["--to", DESTINATION, "--live", "--yes", "sweep"]) == 1
+    assert [c["live"] for c in sweeps.calls] == [False]
+    assert "Nothing was sent" in capsys.readouterr().out
+
+
+def test_hashes_are_printed_when_the_report_cannot_be_written_after_sending(sweeps, monkeypatch, capsys):
+    def refuse(rows, path):
+        raise PermissionError("access denied")
+
+    monkeypatch.setattr(cli.sweep, "write_report", refuse)
+    assert cli.main(["--to", DESTINATION, "--live", "--yes", "sweep"]) == 1
+    assert [c["live"] for c in sweeps.calls] == [False, True]
+    assert "0x" + "cd" * 32 in capsys.readouterr().out
+
+
 def test_nothing_planned_nothing_asked_nothing_sent(sweeps, monkeypatch):
     sweeps.plan = [{**planned(WALLET, "base"), "status": "not worth it"}]
     monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("asked with nothing to send"))

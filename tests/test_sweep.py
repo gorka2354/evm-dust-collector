@@ -436,6 +436,31 @@ def test_only_the_listed_wallet_and_chain_pairs_are_touched():
     assert [sender for sender, _ in eth.sent] == [WALLET]
 
 
+def test_a_sent_token_keeps_its_hash_when_the_check_after_it_fails():
+    eth = FakeEth(balance=10 ** 15, token_balance=5_000_000)
+    original_call = eth.call
+
+    def flaky_call(tx):
+        if eth.sent and bytes(tx["data"][:4]) == sweep.BALANCE_OF_SELECTOR:
+            raise TimeoutError("read timed out")
+        return original_call(tx)
+
+    eth.call = flaky_call
+    rows = run(eth, live=True)
+    assert [(r["symbol"], r["status"]) for r in rows] == [("USDC", "sent"), ("ETH", "sent")]
+    assert rows[0]["tx"] in eth.known
+
+
+def test_each_report_gets_a_new_file_and_never_overwrites_an_earlier_one(tmp_path):
+    first = sweep.new_report(str(tmp_path), stamp="20261106-120000")
+    sweep.write_report([{"chain": "plain", "wallet": WALLET, "symbol": "ETH", "amount": 1, "usd": 1, "fee_usd": 0,
+                         "status": "sent", "tx": "0x" + "ab" * 32}], first)
+    second = sweep.new_report(str(tmp_path), stamp="20261106-120000")
+    assert second != first
+    assert ("0x" + "ab" * 32) in open(first, encoding="utf-8").read()
+    assert open(second, encoding="utf-8").read().strip() == ",".join(sweep.REPORT_FIELDS)
+
+
 def test_the_report_lists_every_row_with_its_hash(tmp_path):
     rows = [{"chain": "plain", "wallet": WALLET, "symbol": "ETH", "amount": 0.1, "usd": 200.0, "fee_usd": 0.01,
              "status": "sent", "tx": "0x" + "ab" * 32}]
