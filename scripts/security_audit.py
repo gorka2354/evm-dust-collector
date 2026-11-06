@@ -42,48 +42,72 @@ def ok(msg):
 
 # ── 1. Secret scan ────────────────────────────────────────────────
 
+def _is_local_secret_file(name):
+    """`.env` and `.env.*` hold the user's real seeds. Only `.env.example` is meant to be shared."""
+    return name == ".env" or (name.startswith(".env.") and name != ".env.example")
+
+
+def _files_to_scan():
+    """What git tracks: the promise is about what gets committed.
+
+    The user's own .env stays unread, so its seeds can never end up in this
+    script's output, a terminal log or a CI log. Without git, every file is
+    walked except local secret files.
+    """
+    import subprocess
+    try:
+        out = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT,
+                             capture_output=True, text=True, check=True).stdout
+        return [os.path.join(ROOT, p) for p in out.split("\0") if p]
+    except Exception:
+        paths = []
+        for cur, dirs, files in os.walk(ROOT):
+            dirs[:] = [d for d in dirs if d not in (".git", "__pycache__", "venv", ".venv")]
+            paths += [os.path.join(cur, fn) for fn in files if not _is_local_secret_file(fn)]
+        return paths
+
+
 def secret_scan():
     print("\n[1] Secret scan (no keys / seeds / .env committed)")
     priv = re.compile(r'\b(0x)?[a-fA-F0-9]{64}\b')
     seed = re.compile(r'\b([a-z]{3,8}\s+){11,23}[a-z]{3,8}\b')
 
-    if os.path.exists(os.path.join(ROOT, ".env")):
-        # A local .env is fine for the user, but it must never be tracked.
-        import subprocess
-        try:
-            tracked = subprocess.run(
-                ["git", "ls-files", ".env"], cwd=ROOT,
-                capture_output=True, text=True).stdout.strip()
-            if tracked:
-                fail(".env is tracked by git!")
-            else:
-                ok(".env exists locally but is not tracked")
-        except Exception:
+    import subprocess
+    try:
+        tracked = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT,
+                                 capture_output=True, text=True, check=True).stdout.split("\0")
+        leaked = [p for p in tracked if p and _is_local_secret_file(os.path.basename(p))]
+        if leaked:
+            fail(f"secret file tracked by git: {', '.join(leaked)}")
+        elif os.path.exists(os.path.join(ROOT, ".env")):
+            ok(".env exists locally but is not tracked")
+    except Exception:
+        if os.path.exists(os.path.join(ROOT, ".env")):
             ok(".env present (git not available to confirm tracking)")
 
     found = 0
-    for cur, dirs, files in os.walk(ROOT):
-        dirs[:] = [d for d in dirs if d not in (".git", "__pycache__", "venv", ".venv")]
-        for fn in files:
-            if os.path.splitext(fn)[1].lower() in SKIP_EXT:
+    for p in _files_to_scan():
+        fn = os.path.basename(p)
+        if os.path.splitext(fn)[1].lower() in SKIP_EXT or _is_local_secret_file(fn):
+            continue
+        try:
+            txt = open(p, encoding="utf-8", errors="ignore").read()
+        except Exception:
+            continue
+        rel = os.path.relpath(p, ROOT)
+        # Where, never what: a match may be a real key, and this output is shown and logged.
+        line_of = lambda m: txt.count("\n", 0, m.start()) + 1
+        for m in priv.finditer(txt):
+            fail(f"private-key-like 64-hex string at {rel}:{line_of(m)}")
+            found += 1
+        for m in seed.finditer(txt):
+            # Ignore English prose (sentences contain punctuation nearby).
+            if fn.endswith((".md", ".py")) and (". " in txt[max(0, m.start()-40):m.end()+40]):
                 continue
-            p = os.path.join(cur, fn)
-            try:
-                txt = open(p, encoding="utf-8", errors="ignore").read()
-            except Exception:
-                continue
-            if priv.search(txt):
-                fail(f"private-key-like 64-hex string in {os.path.relpath(p, ROOT)}")
-                found += 1
-            for m in seed.finditer(txt):
-                frag = m.group(0)
-                # Ignore English prose (sentences contain punctuation nearby).
-                if fn.endswith((".md", ".py")) and (". " in txt[max(0, m.start()-40):m.end()+40]):
-                    continue
-                fail(f"seed-phrase-like text in {os.path.relpath(p, ROOT)}: {frag[:30]}...")
-                found += 1
+            fail(f"seed-phrase-like text at {rel}:{line_of(m)}")
+            found += 1
     if found == 0:
-        ok("no private keys or seed phrases anywhere")
+        ok("no private keys or seed phrases in tracked files")
 
 
 # ── 2. Network egress allow-list ──────────────────────────────────
