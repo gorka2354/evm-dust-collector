@@ -7,11 +7,16 @@
     python -m dust_collector collect --live --yes # bridge for real
     python -m dust_collector withdraw --to 0x..   # target chain -> main wallet
     python -m dust_collector distribute --live    # seed gas for ERC20 swaps
+    python -m dust_collector sweep --to 0x..      # plan sending all dust to one address
+    python -m dust_collector sweep --to 0x.. --live
 """
 
 import argparse
 import os
 import sys
+import time
+
+from web3 import Web3
 
 from . import core
 from .config import CHAINS, TARGET_CHAIN_ID, chain_name_for_id
@@ -113,15 +118,32 @@ def main(argv=None):
         if not args.live:
             print("\n  Dry run: nothing was sent. Add --live to send.")
             return 0
-        if not args.yes and input(f"\nSend all of the above to {to}? Type yes: ").strip().lower() != "yes":
+
+        # The live run touches only what this plan lists, from wallets that can sign.
+        by_address = {Web3.to_checksum_address(w["address"]): w for w in wallets}
+        planned = {(r["wallet"], r["chain"]) for r in plan if r["status"] == "planned"}
+        keyless = sorted({a for a, _ in planned if not by_address[a].get("key")})
+        if keyless:
+            shown = ", ".join(a[:10] + "..." for a in keyless[:8]) + (" ..." if len(keyless) > 8 else "")
+            print(f"\n[!] {len(keyless)} wallet(s) with planned transfers have no key and stay out: {shown}")
+        planned = {(a, c) for a, c in planned if by_address[a].get("key")}
+        if not planned:
+            print("\n  Nothing to send.")
+            return 0
+        senders = [w for a, w in by_address.items() if any(a == p for p, _ in planned)]
+        question = f"\nSend the planned transfers from {len(senders)} wallet(s) to {to}? Type yes: "
+        if not args.yes and input(question).strip().lower() != "yes":
             print("Cancelled, nothing was sent.")
             return 1
         try:
-            rows = sweep.sweep_all(wallets, to, live=True, chains=chains)
+            rows = sweep.sweep_all(senders, to, live=True, chains={c: chains[c] for _, c in planned}, only=planned)
         except ValueError as e:
             print(f"[!] {e}")
             return 1
         sweep.print_sweep(rows, live=True)
+        report = os.path.abspath(f"sweep-{time.strftime('%Y%m%d-%H%M%S')}.csv")
+        sweep.write_report(rows, report)
+        print(f"\n  Every transfer with its hash: {report}")
         return 0
 
     # ── withdraw across all wallets ──

@@ -16,3 +16,4 @@ env/
 # Local scratch
 lens_quote.json
 *.log
+sweep-*.csv
