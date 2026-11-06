@@ -40,6 +40,18 @@ def _resolve_to(args):
     return to.strip() or None
 
 
+def _chosen_chains(args):
+    """The chains --chains names (all of them by default), or None after saying which name is unknown."""
+    if not args.chains:
+        return CHAINS
+    names = [name.strip() for name in args.chains.split(",") if name.strip()]
+    unknown = [name for name in names if name not in CHAINS]
+    if unknown:
+        print(f"[!] Unknown chain(s): {', '.join(unknown)}")
+        return None
+    return {name: CHAINS[name] for name in names}
+
+
 def build_parser():
     p = argparse.ArgumentParser(
         prog="dust_collector",
@@ -53,10 +65,11 @@ def build_parser():
     p.add_argument("--to", help="withdraw destination address (or MAIN_WALLET env)")
     p.add_argument("--amount", type=float, default=0,
                    help="USD amount to withdraw (0 = max)")
-    p.add_argument("--chains", help="sweep: only these chains, comma-separated (default: all)")
+    p.add_argument("--chains", help="sweep/fund: only these chains, comma-separated (default: all)")
+    p.add_argument("--from", dest="funder", help="fund: the wallet that pays the gas top-ups")
     p.add_argument("command", nargs="?", default="scan",
                    choices=["scan", "audit", "estimate", "collect",
-                            "withdraw", "distribute", "sweep"],
+                            "withdraw", "distribute", "sweep", "fund"],
                    help="operation to run (default: scan)")
     return p
 
@@ -93,20 +106,55 @@ def main(argv=None):
         core.distribute_gas(wallets, wallets[0].get("key"), args.target, live=args.live)
         return 0
 
+    # ── fund: gas from one wallet to those whose tokens can't move without it ──
+    if args.command == "fund":
+        to = _resolve_to(args)
+        if not to or not args.funder:
+            print("\n[!] fund needs --from 0x... (a wallet in the .env, with its key) and --to 0x... "
+                  "(where the sweep will send, for the gas estimates).")
+            return 1
+        chains = _chosen_chains(args)
+        if chains is None:
+            return 1
+        print(f"\n[*] Planning gas top-ups from {args.funder} ...")
+        try:
+            plan = sweep.fund_all(wallets, args.funder, to, live=False, chains=chains)
+        except ValueError as e:
+            print(f"[!] {e}")
+            return 1
+        sweep.print_sweep(plan, live=False, title="GAS TOP-UPS")
+        freed = sum(r["frees_usd"] for r in plan if r["status"] == "planned")
+        print(f"  Tokens these top-ups free: ${freed:.2f}")
+        if not args.live:
+            print("\n  Dry run: nothing was sent. Add --live to send.")
+            return 0
+        if not any(r["status"] == "planned" for r in plan):
+            print("\n  Nothing to send.")
+            return 0
+        if not args.yes and input(f"\nSend these top-ups from {args.funder}? Type yes: ").strip().lower() != "yes":
+            print("Cancelled, nothing was sent.")
+            return 1
+        try:
+            report = sweep.new_report()
+        except OSError as e:
+            print(f"[!] Can't create the report file here ({e}). Nothing was sent.")
+            return 1
+        rows = sweep.fund_all(wallets, args.funder, to, live=True, chains=chains)
+        sweep.print_sweep(rows, live=True, title="GAS TOP-UPS")
+        sweep.write_report(rows, report)
+        print(f"\n  Every top-up with its hash: {report}")
+        print("  Next: run sweep again; the freed tokens are in its plan now.")
+        return 0
+
     # ── sweep: every wallet's dust to one address, chain by chain ──
     if args.command == "sweep":
         to = _resolve_to(args)
         if not to:
             print("\n[!] No destination. Use --to 0x... or set MAIN_WALLET env var.")
             return 1
-        chains = CHAINS
-        if args.chains:
-            names = [name.strip() for name in args.chains.split(",") if name.strip()]
-            unknown = [name for name in names if name not in CHAINS]
-            if unknown:
-                print(f"[!] Unknown chain(s): {', '.join(unknown)}")
-                return 1
-            chains = {name: CHAINS[name] for name in names}
+        chains = _chosen_chains(args)
+        if chains is None:
+            return 1
         print(f"\n[*] Planning the sweep of {len(wallets)} wallet(s) to {to} ...")
         try:
             plan = sweep.sweep_all(wallets, to, live=False, chains=chains)
