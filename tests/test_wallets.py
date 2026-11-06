@@ -93,11 +93,39 @@ def test_comments_and_blank_lines_are_skipped():
 
 
 def test_a_line_in_no_known_format_is_refused_by_its_word_count_only():
-    numbered = "1. " + TEST_PHRASE
     with pytest.raises(WalletLineError) as error:
-        parse_line(numbered)
+        parse_line("seed " + TEST_PHRASE)
     assert "13 word(s)" in str(error.value)
     assert "abandon" not in str(error.value)
+
+
+@pytest.mark.parametrize("line", [
+    f"1. {TEST_PHRASE}", f"12) {TEST_PHRASE}", f"3 {TEST_PHRASE}", f"4: {TEST_PHRASE}",
+    ", ".join(TEST_PHRASE.split()), TEST_PHRASE.upper(),
+    f"{FIRST},{TEST_PHRASE}", f"{TEST_PHRASE},{FIRST}", f"{TEST_PHRASE};{FIRST}", f"7. {FIRST} | {TEST_PHRASE}",
+])
+def test_phrases_pasted_from_numbered_lists_and_csv_exports_read_the_same(line):
+    assert parse_line(line) == {"address": FIRST, "key": derive_from_seed(TEST_PHRASE, 0)[1]}
+
+
+def test_an_address_and_its_key_pasted_side_by_side_read_as_a_pair():
+    address, key = derive_from_seed(TEST_PHRASE, 3)
+    for line in (f"{address}:{key}", f"{key},{address}", f"{address} {key[2:]}"):
+        assert parse_line(line) == {"address": address, "key": key}
+    with pytest.raises(WalletLineError) as error:
+        parse_line(f"{FIRST},{key}")
+    assert key[2:] not in str(error.value)
+
+
+def test_two_addresses_on_one_line_are_refused():
+    with pytest.raises(WalletLineError):
+        parse_line(f"{FIRST},{STRANGER},{TEST_PHRASE}")
+
+
+def test_a_setting_that_is_not_a_wallet_is_reported_not_skipped():
+    with pytest.raises(WalletLineError) as error:
+        parse_line(f"MAIN_WALLET={FIRST}")
+    assert "before '='" in str(error.value)
 
 
 def test_the_loader_reports_a_bad_line_by_number_and_never_prints_it(tmp_path, capsys):

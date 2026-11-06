@@ -39,6 +39,10 @@ Account.enable_unaudited_hdwallet_features()
 _SEED_LENGTHS = (12, 15, 18, 21, 24)
 _ADDRESS = re.compile(r"0x[0-9a-fA-F]{40}")
 _PRIVATE_KEY = re.compile(r"(0x)?[0-9a-fA-F]{64}")
+# Lists of wallets are often numbered ("1.", "2)", "3") and exported as CSV,
+# with the address before or after the phrase or key. Both are read as spaces.
+_NUMBERING = re.compile(r"^\d{1,4}[.):\]-]?\s+")
+_SEPARATORS = re.compile(r"[,;:|]")
 
 # Wallets made from one phrase sit at m/44'/60'/0'/0/N. Up to this many
 # accounts of one phrase are searched for listed addresses. With many phrases
@@ -88,37 +92,45 @@ def _from_key(key):
     return Account.from_key(key).address, key
 
 
+def _key_of(address, key):
+    derived, key = _from_key(key)
+    if derived.lower() != address.lower():
+        raise WalletLineError(f"the private key on this line is not the key of {address[:10]}...")
+    return key
+
+
 def _parse(line):
     """(wallet, secret). The secret, a phrase or key, is set only for a line that names no address."""
-    parts = line.split()
-
-    # 0xADDRESS word1 word2 ... (address + seed phrase)
-    if _ADDRESS.fullmatch(parts[0]) and len(parts) - 1 in _SEED_LENGTHS:
-        return {"address": parts[0], "key": key_for_address(" ".join(parts[1:]), parts[0])}, None
-
-    # word1 word2 ... (seed phrase only: its first account)
-    if len(parts) in _SEED_LENGTHS and "=" not in line:
-        phrase = " ".join(parts)
-        addr, key = derive_from_seed(phrase)
-        return {"address": addr, "key": key}, phrase
-
-    # 0xPRIVATEKEY (a key alone: its own address)
-    if len(parts) == 1 and _PRIVATE_KEY.fullmatch(line):
-        addr, key = _from_key(line)
-        return {"address": addr, "key": key}, key
-
     # 0xADDRESS=0xPRIVATEKEY, or 0xADDRESS= for an address alone
     if "=" in line:
         addr, key = (part.strip() for part in line.split("=", 1))
-        if _ADDRESS.fullmatch(addr):
-            if not key:
-                return {"address": addr, "key": None}, None
-            derived, key = _from_key(key)
-            if derived.lower() != addr.lower():
-                raise WalletLineError(f"the private key on this line is not the key of {addr[:10]}...")
-            return {"address": addr, "key": key}, None
+        if not _ADDRESS.fullmatch(addr):
+            raise WalletLineError("the text before '=' is not an address")
+        return {"address": addr, "key": _key_of(addr, key) if key else None}, None
 
-    raise WalletLineError(f"{len(parts)} word(s) not understood: {_EXPECTED} "
+    parts = _SEPARATORS.sub(" ", _NUMBERING.sub("", line)).split()
+    addresses = [p for p in parts if _ADDRESS.fullmatch(p)]
+    rest = [p for p in parts if not _ADDRESS.fullmatch(p)]
+    if len(addresses) > 1:
+        raise WalletLineError(f"{len(addresses)} addresses on one line")
+    address = addresses[0] if addresses else None
+
+    # A seed phrase, with or without the address it made (on either side)
+    if len(rest) in _SEED_LENGTHS:
+        phrase = " ".join(rest).lower()
+        if address:
+            return {"address": address, "key": key_for_address(phrase, address)}, None
+        addr, key = derive_from_seed(phrase)
+        return {"address": addr, "key": key}, phrase
+
+    # A private key, with or without its address (on either side)
+    if len(rest) == 1 and _PRIVATE_KEY.fullmatch(rest[0]):
+        if address:
+            return {"address": address, "key": _key_of(address, rest[0])}, None
+        addr, key = _from_key(rest[0])
+        return {"address": addr, "key": key}, key
+
+    raise WalletLineError(f"{len(rest)} word(s) not understood: {_EXPECTED} "
                           f"(a seed phrase has {', '.join(map(str, _SEED_LENGTHS))} words)")
 
 
