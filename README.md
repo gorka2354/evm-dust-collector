@@ -107,6 +107,17 @@ python collect.py sweep --to 0xDESTINATION --live     # asks once, then sends
 python collect.py sweep --to 0xDESTINATION --chains arbitrum,zksync --live
 ```
 
+Tokens the plan leaves as `no gas` (a wallet with USDC but no POL, say) can
+be freed from one wallet you top up yourself: `fund` sends each of them
+twice its planned fee, keeping back what the funder's own tokens need, and
+the next `sweep` takes the tokens. The funder's leftover goes with that sweep.
+
+```bash
+python collect.py fund --from 0xFUNDER --to 0xDESTINATION --chains polygon          # plan
+python collect.py fund --from 0xFUNDER --to 0xDESTINATION --chains polygon --live   # send top-ups
+python collect.py sweep --to 0xDESTINATION --chains polygon --live
+```
+
 `python -m dust_collector <command>` works identically to `python collect.py`.
 
 ## Commands
@@ -120,6 +131,7 @@ python collect.py sweep --to 0xDESTINATION --chains arbitrum,zksync --live
 | `withdraw` | Send target-chain balance to `--to` address | yes |
 | `distribute` | Send gas from the first wallet to others | yes |
 | `sweep` | Send every wallet's native + listed ERC-20 balances to `--to`, on each chain (plan unless `--live`) | only with `--live` |
+| `fund` | Top up gas from `--from` for wallets whose tokens can't move without it (plan unless `--live`) | only with `--live` |
 
 ## Flags
 
@@ -130,7 +142,8 @@ python collect.py sweep --to 0xDESTINATION --chains arbitrum,zksync --live
 | `--wallet 0x…` | Use a single wallet (skip `.env`) |
 | `--target ID` | Target chain id (default `8453` = Base) |
 | `--to 0x…` | Withdraw / sweep destination (or set `MAIN_WALLET` env var) |
-| `--chains a,b` | Sweep only these chains (names as in `config.py`) |
+| `--chains a,b` | Sweep or fund only these chains (names as in `config.py`) |
+| `--from 0x…` | `fund`: the wallet (in your `.env`, with its key) that pays the top-ups |
 | `--amount USD` | USD amount to withdraw (`0` = max) |
 | `--env PATH` | Path to the wallets file (default `./.env`) |
 
