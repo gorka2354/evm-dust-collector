@@ -101,7 +101,7 @@ def l1_fee_upper_bound(w3, cfg=None):
             fee = 2 * int.from_bytes(w3.eth.call({"to": oracle, "data": _l1_fee_call(blob)}), "big")
         if (cfg or {}).get("l1_fee_in_native"):
             fee *= _token_ratio(w3, oracle)
-        return fee * (cfg or {}).get("l1_fee_margin", 1)
+        return fee * max((cfg or {}).get("l1_fee_margin", 1), 1)  # a margin only ever adds
     if w3.eth.get_code(Web3.to_checksum_address(SCROLL_ORACLE)):
         return 2 * int.from_bytes(w3.eth.call({"to": Web3.to_checksum_address(SCROLL_ORACLE), "data": _l1_fee_call(blob)}), "big")
     return 0

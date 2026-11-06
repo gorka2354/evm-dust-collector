@@ -312,6 +312,12 @@ def test_mantle_keeps_the_margin_its_mempool_asks_on_top_of_the_ratio():
     assert sweep.CHAINS["mantle"]["l1_fee_margin"] >= 4
 
 
+@pytest.mark.parametrize("margin", [0, -1, 0.5])
+def test_a_margin_below_one_never_shrinks_the_reserve(margin):
+    eth = FakeEth(balance=1, oracle=sweep.OP_STACK_ORACLE, l1_fee=7)
+    assert sweep.l1_fee_upper_bound(FakeW3(eth), {"l1_fee_margin": margin}) == 7
+
+
 def test_the_native_transfer_after_a_token_uses_the_l1_fee_of_that_moment():
     eth = FakeEth(balance=10 ** 15, token_balance=5_000_000, oracle=sweep.OP_STACK_ORACLE, l1_fee=7 * 10 ** 9)
     eth.l1_fee_next = 5 * 10 ** 13
