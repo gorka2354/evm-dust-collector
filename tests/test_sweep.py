@@ -51,6 +51,7 @@ class FakeEth:
         self.block_age = 0           # seconds since the newest block
         self.transfer_answer = 1     # what the token's transfer() returns
         self.token_moves = True      # whether a mined token transfer empties the balance
+        self.stale_latest = None     # set: "latest" token reads answer this, as a lagging node does
         self.lost_reply = False      # take the transaction, then lose the reply
         self.l1_fee_next = None      # the L1 fee once a transaction is mined
         self.mined_when_read = None  # a pending transaction is mined as the nonce is read, leaving this
@@ -68,10 +69,12 @@ class FakeEth:
     def get_code(self, address):
         return b"\x01" if self.oracle and address.lower() == self.oracle.lower() else b""
 
-    def call(self, tx):
+    def call(self, tx, block_identifier="latest"):
         if tx["to"].lower() == TOKEN.lower():
             if bytes(tx["data"][:4]) == sweep.TRANSFER_SELECTOR:
                 return self.transfer_answer.to_bytes(32, "big")
+            if self.stale_latest is not None and block_identifier == "latest":
+                return self.stale_latest.to_bytes(32, "big")  # a node a block behind
             return self.token_balance.to_bytes(32, "big")
         if bytes(tx["data"][:4]) == sweep.TOKEN_RATIO:
             if self.token_ratio is None:
@@ -131,7 +134,7 @@ class FakeEth:
             raise ConnectionError("403 Client Error: Forbidden")  # a public node that has had enough
         if not self.mined:
             raise TransactionNotFound("transaction not found")  # what web3 raises for a null receipt
-        return type("Receipt", (), {"status": self.receipt_status})()
+        return type("Receipt", (), {"status": self.receipt_status, "blockNumber": 100})()
 
 
 class FakeW3:
@@ -291,6 +294,22 @@ def test_a_mined_token_transfer_that_left_the_balance_is_reported_not_moved():
     eth.token_moves = False
     rows = run(eth, live=True)
     assert [(r["symbol"], r["status"]) for r in rows] == [("USDC", "not moved"), ("ETH", "sent")]
+
+
+def test_a_moved_token_read_from_a_lagging_node_still_counts_as_sent():
+    eth = FakeEth(balance=10 ** 15, token_balance=5_000_000)
+    rows_before = run(eth)  # plan: reads the real balance
+    assert [r["status"] for r in rows_before if r["symbol"] == "USDC"] == ["planned"]
+    eth.stale_latest = 5_000_000  # from now on "latest" shows the balance from before the transfer
+    rows = run(eth, live=True)
+    assert [(r["symbol"], r["status"]) for r in rows] == [("USDC", "sent"), ("ETH", "sent")]
+
+
+def test_mantle_keeps_the_margin_its_mempool_asks_on_top_of_the_ratio():
+    eth = FakeEth(balance=1, oracle=sweep.OP_STACK_ORACLE, l1_fee=7)
+    eth.token_ratio = 5066
+    assert sweep.l1_fee_upper_bound(FakeW3(eth), {"l1_fee_in_native": True, "l1_fee_margin": 4}) == 7 * 5066 * 4
+    assert sweep.CHAINS["mantle"]["l1_fee_margin"] >= 4
 
 
 def test_the_native_transfer_after_a_token_uses_the_l1_fee_of_that_moment():
@@ -586,10 +605,10 @@ def test_a_sent_token_keeps_its_hash_when_the_check_after_it_fails():
     eth = FakeEth(balance=10 ** 15, token_balance=5_000_000)
     original_call = eth.call
 
-    def flaky_call(tx):
+    def flaky_call(tx, block_identifier="latest"):
         if eth.sent and bytes(tx["data"][:4]) == sweep.BALANCE_OF_SELECTOR:
             raise TimeoutError("read timed out")
-        return original_call(tx)
+        return original_call(tx, block_identifier)
 
     eth.call = flaky_call
     rows = run(eth, live=True)

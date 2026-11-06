@@ -99,7 +99,9 @@ def l1_fee_upper_bound(w3, cfg=None):
             fee = int.from_bytes(w3.eth.call({"to": oracle, "data": L1_FEE_UPPER_BOUND + TX_SIZE_BYTES.to_bytes(32, "big")}), "big")
         except Exception:  # older: the fee of a transaction-sized blob, doubled for margin
             fee = 2 * int.from_bytes(w3.eth.call({"to": oracle, "data": _l1_fee_call(blob)}), "big")
-        return fee * _token_ratio(w3, oracle) if (cfg or {}).get("l1_fee_in_native") else fee
+        if (cfg or {}).get("l1_fee_in_native"):
+            fee *= _token_ratio(w3, oracle)
+        return fee * (cfg or {}).get("l1_fee_margin", 1)
     if w3.eth.get_code(Web3.to_checksum_address(SCROLL_ORACLE)):
         return 2 * int.from_bytes(w3.eth.call({"to": Web3.to_checksum_address(SCROLL_ORACLE), "data": _l1_fee_call(blob)}), "big")
     return 0
@@ -118,9 +120,9 @@ def _token_ratio(w3, oracle):
     return max(ratio, 1)
 
 
-def _token_balance(w3, token, wallet):
+def _token_balance(w3, token, wallet, block="latest"):
     data = BALANCE_OF_SELECTOR + bytes.fromhex(wallet[2:].lower().rjust(64, "0"))
-    return int.from_bytes(w3.eth.call({"to": Web3.to_checksum_address(token), "data": data}), "big")
+    return int.from_bytes(w3.eth.call({"to": Web3.to_checksum_address(token), "data": data}, block), "big")
 
 
 def _known(w3, tx_hash):
@@ -144,12 +146,12 @@ def _send(w3, tx, key, others=()):
     except Exception as e:
         # Refused, or taken with the reply lost: only the node can tell which.
         if not _known(w3, tx_hash):
-            return tx_hash, f"error: {_short(e)}"
+            return tx_hash, f"error: {_short(e)}", None
     receipt = _receipt(w3, tx_hash, others)
     if receipt is None:
         # Broadcast, not mined yet. The next run finds it in flight and leaves the chain alone.
-        return tx_hash, "pending"
-    return tx_hash, "sent" if receipt.status == 1 else "reverted"
+        return tx_hash, "pending", None
+    return tx_hash, "sent" if receipt.status == 1 else "reverted", getattr(receipt, "blockNumber", None)
 
 
 def _receipt(w3, tx_hash, others=()):
@@ -258,12 +260,14 @@ def sweep_chain(w3, chain, cfg, wallet, key, to, live, rows, others=()):
             continue
         tx = {"from": wallet, "to": contract, "value": 0, "data": data,
               "gas": gas, "nonce": nonce, "chainId": cfg["id"], **fee_fields}
-        tx_hash, status = _send(w3, tx, key, others)
+        tx_hash, status, block = _send(w3, tx, key, others)
         # Recorded before any further call to the node, so a failing call can't lose the hash.
         sent_row = row(symbol, held, dec, value_usd, fee_usd, status, tx_hash)
-        if status == "sent":
+        if status == "sent" and block is not None:
             try:
-                if _token_balance(w3, token["address"], wallet) >= held:
+                # Read at the receipt's block: a node behind the one that gave the receipt
+                # still shows the balance from before, and called nine moved tokens unmoved.
+                if _token_balance(w3, token["address"], wallet, block) >= held:
                     sent_row["status"] = status = "not moved"  # mined, yet the balance is still there
             except Exception:
                 pass  # the receipt said success; only the extra check couldn't run
@@ -292,7 +296,7 @@ def sweep_chain(w3, chain, cfg, wallet, key, to, live, rows, others=()):
         else:
             tx = {"from": wallet, "to": to, "value": amount, "data": b"", "gas": gas, "nonce": nonce,
                   "chainId": cfg["id"], **fee_fields}
-            tx_hash, status = _send(w3, tx, key, others)
+            tx_hash, status, _ = _send(w3, tx, key, others)
             row(native, amount, decimals, value_usd, fee_usd, status, tx_hash)
 
 
@@ -492,7 +496,7 @@ def fund_chain(w3, chain, cfg, funder, key, needs, live, rows, own=None, others=
             continue
         tx = {"from": funder, "to": to, "value": amount, "data": b"", "gas": gas, "nonce": nonce,
               "chainId": cfg["id"], **fee_fields}
-        tx_hash, status = _send(w3, tx, key, others)
+        tx_hash, status, block = _send(w3, tx, key, others)
         row(to, amount, fee, need["usd"], status, tx_hash)
         if status not in ("sent", "reverted"):
             return  # unsure: the next top-up waits for a re-run

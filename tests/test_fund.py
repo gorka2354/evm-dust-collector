@@ -57,7 +57,7 @@ class Chain:
     def get_code(self, address):
         return b"\xef\x01\x00" if address in self.value_gas else b""  # what a delegated EIP-7702 account shows
 
-    def call(self, tx):
+    def call(self, tx, block_identifier="latest"):
         data = bytes(tx["data"])
         if data[:4] == BALANCE_OF:
             return self.tokens.get(Web3.to_checksum_address("0x" + data[-20:].hex()), 0).to_bytes(32, "big")
@@ -99,7 +99,7 @@ class Chain:
         return Web3.keccak(raw)
 
     def get_transaction_receipt(self, tx_hash):
-        return type("Receipt", (), {"status": 1})()
+        return type("Receipt", (), {"status": 1, "blockNumber": 100})()
 
     def get_transaction(self, tx_hash):
         return {"hash": tx_hash}
