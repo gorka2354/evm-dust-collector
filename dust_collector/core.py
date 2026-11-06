@@ -12,7 +12,7 @@ from web3 import Web3
 from . import bridges
 from .config import (CHAINS, TOKENS, ERC20_ABI, MIN_PROFIT_USD, SEND_PERCENT,
                      chain_name_for_id)
-from .prices import to_usd, price_of
+from .prices import to_usd, price_of, token_usd
 from .web3compat import get_w3, raw_tx
 
 
@@ -97,7 +97,7 @@ def scan_wallet(wallet, chains=None):
                         "chain": chain_name, "chain_id": cfg["id"],
                         "symbol": token["symbol"], "address": token["address"],
                         "balance_raw": bal, "balance": human,
-                        "decimals": token["decimals"], "usd": to_usd(token["symbol"], human),
+                        "decimals": token["decimals"], "usd": token_usd(token, human),
                         "type": "erc20",
                     })
             except Exception:
@@ -476,7 +476,7 @@ def distribute_gas(wallets, key, target_id, live=False):
                 contract = w3.eth.contract(
                     address=Web3.to_checksum_address(token["address"]), abi=ERC20_ABI)
                 tok_bal = contract.functions.balanceOf(addr).call()
-                if tok_bal > 0 and to_usd(token["symbol"], fmt(tok_bal, token["decimals"])) > 0.10:
+                if tok_bal > 0 and token_usd(token, fmt(tok_bal, token["decimals"])) > 0.10:
                     has_tokens = True
                     break
             except Exception:
