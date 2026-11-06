@@ -7,9 +7,9 @@ so the bar for changes is "obviously safe and easy to audit."
 
 1. **Keys stay local.** Nothing may put a private key or seed phrase into a
    file, a log, or a network request. The only places a key is used are
-   `wallets.py` (`seed_from_mnemonic` / `key_from_seed`) and `core.py`
-   (`sign_transaction`). Keep it that way, and never let a message quote a
-   `.env` line: errors from the key libraries can contain the phrase.
+   `wallets.py` (`seed_from_mnemonic` / `key_from_seed`), `core.py` and
+   `sweep.py` (`sign_transaction`). Keep it that way, and never let a message
+   quote a `.env` line: errors from the key libraries can contain the phrase.
 2. **No new network egress without documenting it.** The tool talks only to
    the RPCs in `config.py`, Relay, LiFi and CoinGecko. If you add an endpoint,
    update `SECURITY.md` and the allow-list in `scripts/security_audit.py` in

@@ -17,6 +17,7 @@ from . import core
 from .config import CHAINS, TARGET_CHAIN_ID, chain_name_for_id
 from .prices import update_prices
 from .wallets import load_wallets, default_env_path
+from . import sweep
 
 
 def _resolve_wallets(args):
@@ -48,9 +49,10 @@ def build_parser():
     p.add_argument("--to", help="withdraw destination address (or MAIN_WALLET env)")
     p.add_argument("--amount", type=float, default=0,
                    help="USD amount to withdraw (0 = max)")
+    p.add_argument("--chains", help="sweep: only these chains, comma-separated (default: all)")
     p.add_argument("command", nargs="?", default="scan",
                    choices=["scan", "audit", "estimate", "collect",
-                            "withdraw", "distribute"],
+                            "withdraw", "distribute", "sweep"],
                    help="operation to run (default: scan)")
     return p
 
@@ -85,6 +87,41 @@ def main(argv=None):
     # ── distribute: gas from first wallet to the rest ──
     if args.command == "distribute":
         core.distribute_gas(wallets, wallets[0].get("key"), args.target, live=args.live)
+        return 0
+
+    # ── sweep: every wallet's dust to one address, chain by chain ──
+    if args.command == "sweep":
+        to = _resolve_to(args)
+        if not to:
+            print("\n[!] No destination. Use --to 0x... or set MAIN_WALLET env var.")
+            return 1
+        chains = CHAINS
+        if args.chains:
+            names = [name.strip() for name in args.chains.split(",") if name.strip()]
+            unknown = [name for name in names if name not in CHAINS]
+            if unknown:
+                print(f"[!] Unknown chain(s): {', '.join(unknown)}")
+                return 1
+            chains = {name: CHAINS[name] for name in names}
+        print(f"\n[*] Planning the sweep of {len(wallets)} wallet(s) to {to} ...")
+        try:
+            plan = sweep.sweep_all(wallets, to, live=False, chains=chains)
+        except ValueError as e:
+            print(f"[!] {e}")
+            return 1
+        sweep.print_sweep(plan, live=False)
+        if not args.live:
+            print("\n  Dry run: nothing was sent. Add --live to send.")
+            return 0
+        if not args.yes and input(f"\nSend all of the above to {to}? Type yes: ").strip().lower() != "yes":
+            print("Cancelled, nothing was sent.")
+            return 1
+        try:
+            rows = sweep.sweep_all(wallets, to, live=True, chains=chains)
+        except ValueError as e:
+            print(f"[!] {e}")
+            return 1
+        sweep.print_sweep(rows, live=True)
         return 0
 
     # ── withdraw across all wallets ──

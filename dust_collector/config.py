@@ -11,6 +11,8 @@ TARGET_CHAIN_ID = 8453  # Base
 # Economics
 MIN_PROFIT_USD = 0.15   # skip a chain if net value after gas+bridge is below this
 SEND_PERCENT = 0.82     # bridge 82% of a native balance, keep 18% for gas + L1 fees
+SWEEP_MIN_USD = 0.05        # sweep: skip a balance worth less than this
+SWEEP_MAX_FEE_SHARE = 0.25  # sweep: skip a balance whose transfer fee is more than this share of it
 
 # bridge field picks the adapter in bridges.py:
 #   "relay"        -> Relay Protocol  (default, most chains)

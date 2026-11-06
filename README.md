@@ -97,6 +97,16 @@ python collect.py withdraw --to 0xYOUR_MAIN_WALLET --live
 python collect.py distribute --live
 ```
 
+Or, with many wallets, skip the per-wallet bridging: sweep everything to one
+address chain by chain (a plain transfer costs a fraction of a cent on most
+L2s), then bridge once from there.
+
+```bash
+python collect.py sweep --to 0xDESTINATION            # plan only, sends nothing
+python collect.py sweep --to 0xDESTINATION --live     # asks once, then sends
+python collect.py sweep --to 0xDESTINATION --chains arbitrum,zksync --live
+```
+
 `python -m dust_collector <command>` works identically to `python collect.py`.
 
 ## Commands
@@ -109,6 +119,7 @@ python collect.py distribute --live
 | `collect` | Bridge profitable balances to target (dry run unless `--live`) | yes |
 | `withdraw` | Send target-chain balance to `--to` address | yes |
 | `distribute` | Send gas from the first wallet to others | yes |
+| `sweep` | Send every wallet's native + listed ERC-20 balances to `--to`, on each chain (plan unless `--live`) | only with `--live` |
 
 ## Flags
 
@@ -118,7 +129,8 @@ python collect.py distribute --live
 | `--yes` / `-y` | Auto-confirm each transaction |
 | `--wallet 0x…` | Use a single wallet (skip `.env`) |
 | `--target ID` | Target chain id (default `8453` = Base) |
-| `--to 0x…` | Withdraw destination (or set `MAIN_WALLET` env var) |
+| `--to 0x…` | Withdraw / sweep destination (or set `MAIN_WALLET` env var) |
+| `--chains a,b` | Sweep only these chains (names as in `config.py`) |
 | `--amount USD` | USD amount to withdraw (`0` = max) |
 | `--env PATH` | Path to the wallets file (default `./.env`) |
 
@@ -130,6 +142,15 @@ python collect.py distribute --live
    Relay (most chains) · LiFi (Lens GHO) · native bridge (Polygon zkEVM → L1).
    Sends 82% of a native balance, keeping the rest for gas + L1 fees.
 4. **Withdraw** — sends the consolidated balance from Base to your main wallet.
+
+**Sweep** works differently: no bridge. Each wallet sends its balance to the
+destination on the chain where it sits — the native coin less the worst-case
+fee (gas at a ceiling of 1.3× the base fee, plus the L1 data fee on OP-stack
+chains and Scroll), and the ERC-20s listed in `config.py` with a standard
+`transfer`. A balance under `SWEEP_MIN_USD` or one whose fee would take more
+than `SWEEP_MAX_FEE_SHARE` of it stays put. Chains whose node is down or
+answers with another chain id are skipped up front, and a wallet with a
+transaction still in flight on a chain is left alone there until the next run.
 
 ## Supported chains (33)
 
@@ -161,7 +182,9 @@ dust_collector/
   web3compat.py # web3 6.x / 7.x shim
   bridges.py    # Relay / LiFi / zkEVM adapters behind one interface
   core.py       # scan / estimate / collect / withdraw / distribute
+  sweep.py      # sweep: plain transfers to one address, chain by chain
   cli.py        # argument parsing
+tests/          # pytest: wallet loading and sweep against fake nodes
 ```
 
 ## ⚠️ Disclaimer

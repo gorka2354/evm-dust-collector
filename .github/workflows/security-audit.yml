@@ -41,7 +41,7 @@ jobs:
       - name: Import + compile smoke test
         run: |
           python -m py_compile dust_collector/*.py collect.py scripts/security_audit.py
-          python -c "from dust_collector import config, web3compat, wallets, prices, bridges, core, cli; print('import OK on web3', __import__('web3').__version__)"
+          python -c "from dust_collector import config, web3compat, wallets, prices, bridges, core, sweep, cli; print('import OK on web3', __import__('web3').__version__)"
 
       - name: CLI help
         run: python collect.py --help
