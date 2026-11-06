@@ -4,6 +4,7 @@ Chains are faked; signing is real, with keys of the public BIP-39 test phrase.
 """
 
 import pytest
+from eth_abi import decode
 from eth_account import Account
 from web3 import Web3
 
@@ -18,6 +19,8 @@ DESTINATION = Web3.to_checksum_address("0x" + "ab" * 20)
 TOKEN = Web3.to_checksum_address("0x" + "cd" * 20)
 GWEI = 10 ** 9
 ETHER = 10 ** 18
+UPPER_BOUND = bytes(Web3.keccak(text="getL1FeeUpperBound(uint256)")[:4])
+L1_FEE = bytes(Web3.keccak(text="getL1Fee(bytes)")[:4])
 
 
 class FakeEth:
@@ -37,6 +40,9 @@ class FakeEth:
         self.nonce = 5
         self.in_flight = 0
         self.mined = True
+        self.receipt_status = 1
+        self.upper_bound_missing = False
+        self.calls = []
         self.sent = []
         self.account = Account
 
@@ -52,6 +58,9 @@ class FakeEth:
     def call(self, tx):
         if tx["to"].lower() == TOKEN.lower():
             return self.token_balance.to_bytes(32, "big")
+        self.calls.append(bytes(tx["data"]))
+        if self.upper_bound_missing and tx["data"][:4] == UPPER_BOUND:
+            raise ValueError("execution reverted")
         return self.l1_fee.to_bytes(32, "big")
 
     def estimate_gas(self, tx):
@@ -64,13 +73,14 @@ class FakeEth:
         return self.nonce + (self.in_flight if block == "pending" else 0)
 
     def send_raw_transaction(self, raw):
-        signed = Account.recover_transaction(raw)
-        self.sent.append((signed, raw))
+        sender = Account.recover_transaction(raw)
         tx = self.decoded(raw)
-        if tx["to"] and Web3.to_checksum_address(tx["to"]) == TOKEN:
+        if tx["value"] + tx["gas"] * tx["maxFeePerGas"] + self.l1_fee > self.balance:
+            raise ValueError("insufficient funds for gas * price + value")  # what a node answers
+        self.sent.append((sender, raw))
+        self.balance -= tx["value"] + tx["gas"] * self.base_fee + self.l1_fee
+        if Web3.to_checksum_address(tx["to"]) == TOKEN:
             self.token_balance = 0
-        else:
-            self.balance -= tx["value"] + tx["gas"] * self.base_fee
         return bytes(32)
 
     @staticmethod
@@ -84,7 +94,7 @@ class FakeEth:
     def wait_for_transaction_receipt(self, tx_hash, timeout):
         if not self.mined:
             raise TimeoutError("not mined")
-        return type("Receipt", (), {"status": 1})()
+        return type("Receipt", (), {"status": self.receipt_status})()
 
 
 class FakeW3:
@@ -137,11 +147,57 @@ def test_where_rollups_bill_an_l1_fee_it_is_left_for_too():
     [row] = run(eth)
     gas = int(21_000 * 1.2)
     assert row["amount"] == pytest.approx((10 ** 15 - gas * int(GWEI * 1.3) - 7 * 10 ** 9) / ETHER)
+    assert eth.calls == [UPPER_BOUND + sweep.TX_SIZE_BYTES.to_bytes(32, "big")]
+
+
+def test_an_op_stack_chain_before_fjord_doubles_the_fee_of_a_transaction_sized_blob():
+    eth = FakeEth(balance=1, oracle=sweep.OP_STACK_ORACLE, l1_fee=7)
+    eth.upper_bound_missing = True
+    assert sweep.l1_fee_upper_bound(FakeW3(eth)) == 14
+    assert eth.calls[-1][:4] == L1_FEE
+    assert len(decode(["bytes"], eth.calls[-1][4:])[0]) == sweep.TX_SIZE_BYTES
+
+
+def test_scroll_doubles_the_fee_of_a_transaction_sized_blob():
+    eth = FakeEth(balance=1, oracle=sweep.SCROLL_ORACLE, l1_fee=7)
+    assert sweep.l1_fee_upper_bound(FakeW3(eth)) == 14
+    assert eth.calls[-1][:4] == L1_FEE
+    assert len(decode(["bytes"], eth.calls[-1][4:])[0]) == sweep.TX_SIZE_BYTES
+
+
+def test_a_chain_without_an_oracle_bills_no_l1_fee():
+    assert sweep.l1_fee_upper_bound(FakeW3(FakeEth(balance=1))) == 0
+
+
+def test_a_planned_token_transfer_leaves_its_fee_out_of_the_native_amount():
+    eth = FakeEth(balance=10 ** 15, token_balance=5_000_000)
+    rows = run(eth)
+    token_fee = int(50_000 * 1.2) * int(GWEI * 1.3)
+    native_fee = int(21_000 * 1.2) * int(GWEI * 1.3)
+    assert [r["status"] for r in rows] == ["planned", "planned"]
+    assert rows[1]["amount"] == pytest.approx((10 ** 15 - token_fee - native_fee) / ETHER)
+
+
+def test_a_reverted_transfer_is_reported_as_reverted(capsys):
+    eth = FakeEth(balance=10 ** 15)
+    eth.receipt_status = 0
+    rows = run(eth, live=True)
+    assert [r["status"] for r in rows] == ["reverted"]
+    sweep.print_sweep(rows, live=True)
+    assert "[REVERTED] plain" in capsys.readouterr().out
 
 
 def test_dust_smaller_than_it_is_worth_moving_stays():
     [row] = run(FakeEth(balance=10 ** 13))
     assert row["status"] == "not worth it"
+
+
+@pytest.mark.parametrize("balance", [5 * 10 ** 13, 10 ** 14])  # $0.03 left after the fee; a fee of half the value
+def test_native_dust_that_would_cover_its_fee_still_stays_when_not_worth_it(balance):
+    eth = FakeEth(balance=balance)
+    [row] = run(eth, live=True)
+    assert row["status"] == "not worth it"
+    assert eth.sent == []
 
 
 def test_an_empty_wallet_has_nothing_to_report():
