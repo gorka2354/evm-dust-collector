@@ -440,31 +440,46 @@ def fund_chain(w3, chain, cfg, funder, key, needs, live, rows, own=None, others=
         row(funder, 0, 0, 0.0, "in flight")
         return
     held = w3.eth.get_balance(funder)
-    max_fee, fee_fields = fee_params(w3)
-    l1_fee = l1_fee_upper_bound(w3, cfg)
     own = own or {"gas": 0, "transfers": 0}
-    reserve = (own["gas"] * max_fee + own["transfers"] * l1_fee) * FUND_MARGIN
-    balance = held - reserve
-    wanted = reserve  # all the funder needs: its own reserve plus every top-up worth sending
+
+    def priced():
+        """This moment's fees, and the reserve the funder's own tokens need at them."""
+        max_fee, fee_fields = fee_params(w3)
+        l1_fee = l1_fee_upper_bound(w3, cfg)
+        return max_fee, fee_fields, l1_fee, (own["gas"] * max_fee + own["transfers"] * l1_fee) * FUND_MARGIN
+
+    max_fee, fee_fields, l1_fee, reserve = priced()
+    spent = 0  # counted, not read back: a node behind the one that gave a receipt can show the old balance
+    asked = 0  # every top-up worth sending, sent or short
     for need in needs:
         to = need["wallet"]
-        amount = top_up(need, max_fee, l1_fee)
-        if to == funder or not amount:
+        if to == funder:
             continue
-        # Value left out of the estimate: a node refuses one for more than the
-        # funder holds, and the plan has to say how much to send it first.
+        if live and spent:
+            # A receipt was waited for: fees, the reserve and the amount are priced afresh.
+            max_fee, fee_fields, l1_fee, reserve = priced()
+        available = held - spent - reserve
+        amount = top_up(need, max_fee, l1_fee)
+        if not amount:
+            continue
+        # First without the value: a node refuses an estimate for more than the
+        # funder holds, and an empty funder's plan must still say what to send it.
         gas = int(w3.eth.estimate_gas({"from": funder, "to": to, "value": 0}) * 1.2)
         fee = gas * max_fee + l1_fee
         if not worth_sending(need["usd"], to_usd(native, (amount + fee) / 10 ** decimals)):
             row(to, amount, fee, need["usd"], "not worth it")
             continue
-        wanted += amount + fee
-        if amount + fee > balance:
+        if amount + fee <= available:
+            # Then with it: code at the recipient (an EIP-7702 account) may cost more for a real amount.
+            gas = int(w3.eth.estimate_gas({"from": funder, "to": to, "value": amount}) * 1.2)
+            fee = gas * max_fee + l1_fee
+        asked += amount + fee
+        if amount + fee > available:
             row(to, amount, fee, need["usd"], "funder short")
             continue
         if not live:
             row(to, amount, fee, need["usd"], "planned")
-            balance -= amount + fee
+            spent += amount + fee
             continue
         tx = {"from": funder, "to": to, "value": amount, "data": b"", "gas": gas, "nonce": nonce,
               "chainId": cfg["id"], **fee_fields}
@@ -473,10 +488,9 @@ def fund_chain(w3, chain, cfg, funder, key, needs, live, rows, own=None, others=
         if status not in ("sent", "reverted"):
             return  # unsure: the next top-up waits for a re-run
         nonce += 1
-        # Counted, not read back: a node behind the one that gave the receipt
-        # can still show the old balance and let the reserve go.
-        balance -= amount + fee
+        spent += amount + fee
     if not live:
+        wanted = asked + reserve
         short = max(wanted - held, 0)
         more = f"send it {short / 10 ** decimals:.6g} {native} more" if short else "enough"
         print(f"  [*] {chain}: the funder needs {wanted / 10 ** decimals:.6g} {native} in all, "
