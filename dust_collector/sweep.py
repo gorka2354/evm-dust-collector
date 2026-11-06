@@ -423,18 +423,23 @@ def fund_chain(w3, chain, cfg, funder, key, needs, live, rows, reserve=0, others
     if nonce != w3.eth.get_transaction_count(funder, "latest"):
         row(funder, 0, 0, 0.0, "in flight")
         return
-    balance = w3.eth.get_balance(funder) - reserve
+    held = w3.eth.get_balance(funder)
+    balance = held - reserve
     max_fee, fee_fields = fee_params(w3)
     l1_fee = l1_fee_upper_bound(w3)
+    wanted = reserve  # all the funder needs: its own reserve plus every top-up worth sending
     for need in needs:
         to, amount = need["wallet"], need["need_wei"]
         if to == funder:
             continue
-        gas = int(w3.eth.estimate_gas({"from": funder, "to": to, "value": amount}) * 1.2)
+        # Value left out of the estimate: a node refuses one for more than the
+        # funder holds, and the plan has to say how much to send it first.
+        gas = int(w3.eth.estimate_gas({"from": funder, "to": to, "value": 0}) * 1.2)
         fee = gas * max_fee + l1_fee
         if not worth_sending(need["usd"], to_usd(native, (amount + fee) / 10 ** decimals)):
             row(to, amount, fee, need["usd"], "not worth it")
             continue
+        wanted += amount + fee
         if amount + fee > balance:
             row(to, amount, fee, need["usd"], "funder short")
             continue
@@ -450,6 +455,11 @@ def fund_chain(w3, chain, cfg, funder, key, needs, live, rows, reserve=0, others
             return  # unsure: the next top-up waits for a re-run
         nonce += 1
         balance = w3.eth.get_balance(funder) - reserve
+    if not live:
+        short = max(wanted - held, 0)
+        more = f"send it {short / 10 ** decimals:.6g} {native} more" if short else "enough"
+        print(f"  [*] {chain}: the funder needs {wanted / 10 ** decimals:.6g} {native} in all, "
+              f"holds {held / 10 ** decimals:.6g}: {more}")
 
 
 def fund_all(wallets, funder, to, live=False, chains=None, w3_for=None):
