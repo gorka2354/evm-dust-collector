@@ -112,11 +112,22 @@ def wallets(*keys):
     return [{"address": derive_from_seed(TEST_PHRASE, i)[0], "key": derive_from_seed(TEST_PHRASE, i)[1]} for i in keys]
 
 
-def test_the_need_covers_every_stuck_token_twice_less_the_gas_already_there():
-    rows = [{"wallet": A, "chain": "plain", "status": "no gas", "fee_wei": 100, "native_wei": 30, "usd": 1.0},
-            {"wallet": A, "chain": "plain", "status": "no gas", "fee_wei": 50, "native_wei": 30, "usd": 2.0},
-            {"wallet": B, "chain": "plain", "status": "planned", "usd": 5.0}]
-    assert sweep.funding_needs(rows) == [{"wallet": A, "chain": "plain", "need_wei": 150 * sweep.FUND_MARGIN - 30, "usd": 3.0}]
+def stuck(wallet, gas, usd, native=30, fee_usd=0.01):
+    return {"wallet": wallet, "chain": "plain", "status": "no gas", "gas": gas, "native_wei": native,
+            "usd": usd, "fee_usd": fee_usd}
+
+
+def test_the_top_up_covers_every_stuck_token_twice_at_the_fees_of_the_moment_less_the_gas_there():
+    rows = [stuck(A, 100, 1.0), stuck(A, 50, 2.0), {"wallet": B, "chain": "plain", "status": "planned", "usd": 5.0}]
+    [need] = sweep.funding_needs(rows)
+    assert need == {"wallet": A, "chain": "plain", "gas": 150, "transfers": 2, "native_wei": 30, "usd": 3.0}
+    assert sweep.top_up(need, max_fee=10, l1_fee=7) == (150 * 10 + 2 * 7) * sweep.FUND_MARGIN - 30
+    assert sweep.top_up(need, max_fee=30, l1_fee=7) == (150 * 30 + 2 * 7) * sweep.FUND_MARGIN - 30
+
+
+def test_tokens_the_sweep_would_leave_anyway_free_nothing_even_together():
+    # Two tokens of 4 cents: each under the sweep's minimum, so funding them moves nothing.
+    assert sweep.funding_needs([stuck(A, 100, 0.04), stuck(A, 100, 0.04)]) == []
 
 
 def test_top_ups_free_the_stuck_tokens_and_the_sweep_then_takes_them():
@@ -168,6 +179,39 @@ def test_the_funder_keeps_what_its_own_stuck_tokens_need():
     assert node.sent == []
 
 
+def test_a_top_up_is_priced_at_the_gas_price_it_is_sent_at():
+    node = Chain(native={FUNDER: 10 ** 16}, tokens={A: 5_000_000})
+    plan = sweep.sweep_all([{"address": A, "key": None}], DESTINATION, chains=CHAIN, w3_for=lambda cfg: W3(node))
+    [need] = sweep.funding_needs(plan)
+    node.base_fee = node.gas_price = 3 * GWEI  # gas got dearer after the plan
+    rows = []
+    sweep.fund_chain(W3(node), "plain", CHAIN["plain"], FUNDER, FUNDER_KEY, [need], True, rows)
+    [(sender, to, value)] = node.sent
+    assert (sender, to) == (FUNDER, A)
+    assert value == int(50_000 * 1.2) * int(3 * GWEI * 1.3) * sweep.FUND_MARGIN
+
+
+def test_a_node_showing_the_old_balance_after_a_top_up_cannot_spend_the_reserve():
+    node = Chain(native={FUNDER: 0}, tokens={A: 5_000_000, B: 5_000_000})
+    each = int(50_000 * 1.2) * int(GWEI * 1.3) * sweep.FUND_MARGIN + int(21_000 * 1.2) * int(GWEI * 1.3)
+    node.native[FUNDER] = each + each // 2  # enough for one top-up, not two
+    seen = node.native[FUNDER]
+    stale = W3(node)
+    original = node.get_balance
+    node.get_balance = lambda address: seen if address == FUNDER else original(address)  # never catches up
+    plan = sweep.sweep_all([{"address": A, "key": None}, {"address": B, "key": None}], DESTINATION,
+                           chains=CHAIN, w3_for=lambda cfg: stale)
+    rows = []
+    sweep.fund_chain(stale, "plain", CHAIN["plain"], FUNDER, FUNDER_KEY, sweep.funding_needs(plan), True, rows)
+    assert sorted(r["status"] for r in rows) == ["funder short", "sent"]
+
+
+def test_the_funder_can_be_the_destination_too():
+    node = Chain(native={FUNDER: 10 ** 16}, tokens={A: 5_000_000})
+    rows = sweep.fund_all(wallets(0, 1), FUNDER, FUNDER, live=True, chains=CHAIN, w3_for=lambda cfg: W3(node))
+    assert [(r["wallet"], r["status"]) for r in rows] == [(A, "sent")]
+
+
 def test_a_funder_with_stuck_tokens_of_its_own_never_sends_to_itself():
     node = Chain(native={FUNDER: 0}, tokens={FUNDER: 5_000_000, A: 5_000_000})
     rows = sweep.fund_all(wallets(0, 1), FUNDER, DESTINATION, live=True, chains=CHAIN, w3_for=lambda cfg: W3(node))
@@ -210,6 +254,16 @@ def test_fund_sends_after_the_plan_and_a_typed_yes(funds, monkeypatch, tmp_path)
     assert cli.main(["--from", FUNDER, "--to", DESTINATION, "--live", "fund"]) == 0
     assert funds == [False, True]
     assert list(tmp_path.glob("sweep-*.csv"))
+
+
+def test_fund_prints_every_hash_when_the_report_cannot_be_written(funds, monkeypatch, capsys):
+    def refuse(rows, path):
+        raise PermissionError("access denied")
+
+    monkeypatch.setattr(cli.sweep, "write_report", refuse)
+    assert cli.main(["--from", FUNDER, "--to", DESTINATION, "--live", "--yes", "fund"]) == 1
+    assert funds == [False, True]
+    assert "0x" + "ef" * 32 in capsys.readouterr().out
 
 
 def test_fund_needs_a_funder_and_a_destination(funds):

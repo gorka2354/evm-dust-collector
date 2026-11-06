@@ -207,7 +207,21 @@ def test_scroll_doubles_the_fee_of_a_transaction_sized_blob():
 def test_mantle_bills_the_l1_fee_in_its_own_token_at_the_oracles_ratio():
     eth = FakeEth(balance=1, oracle=sweep.OP_STACK_ORACLE, l1_fee=7)
     eth.token_ratio = 5066
-    assert sweep.l1_fee_upper_bound(FakeW3(eth)) == 7 * 5066
+    assert sweep.l1_fee_upper_bound(FakeW3(eth), {"l1_fee_in_native": True}) == 7 * 5066
+
+
+def test_a_ratio_on_a_chain_not_marked_for_it_is_ignored():
+    eth = FakeEth(balance=1, oracle=sweep.OP_STACK_ORACLE, l1_fee=7)
+    eth.token_ratio = 2 ** 256 - 1  # an oracle answering tokenRatio() with nonsense
+    assert sweep.l1_fee_upper_bound(FakeW3(eth), {"id": 10}) == 7
+
+
+@pytest.mark.parametrize("stamp, usable", [(0, False), (None, True)])
+def test_a_zero_timestamp_is_the_oldest_block_and_a_missing_one_cannot_be_judged(monkeypatch, stamp, usable):
+    eth = FakeEth(balance=1)
+    monkeypatch.setattr(eth, "get_block", lambda tag: {"baseFeePerGas": GWEI, "timestamp": stamp})
+    up, _ = sweep.reachable_chains(CHAIN, lambda cfg: FakeW3(eth))
+    assert ("plain" in up) is usable
 
 
 def test_a_receipt_refused_by_the_node_in_use_is_read_from_another_endpoint():
