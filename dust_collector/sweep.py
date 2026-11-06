@@ -140,8 +140,8 @@ def _receipt(w3, tx_hash):
                 return receipt
         except Exception:
             pass  # not mined yet, or the node briefly refusing: ask again
-        if time.monotonic() >= deadline:
-            return None
+        if time.monotonic() + RECEIPT_POLL >= deadline:
+            return None  # no time left for another look: none starts past the deadline
         time.sleep(RECEIPT_POLL)
 
 
