@@ -74,7 +74,8 @@ def main(argv=None):
         print(f"\n[!] No wallets found in {args.env or default_env_path()}")
         print("    Add wallets to .env (see .env.example) or use --wallet 0x...")
         return 1
-    print(f"[*] Loaded {len(wallets)} wallet(s)")
+    keyed = sum(1 for w in wallets if w.get("key"))
+    print(f"[*] Loaded {len(wallets)} wallet(s), {keyed} with a key")
 
     # ── audit: fast parallel native scan across all wallets ──
     if args.command == "audit":

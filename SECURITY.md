@@ -15,14 +15,14 @@ never logged, and never put into any network request.
 ### 1. Every line that touches a key
 
 ```bash
-grep -rn -E "sign_transaction|from_mnemonic|\.key|enable_unaudited" dust_collector/
+grep -rn -E "sign_transaction|from_mnemonic|key_from_seed|\.key|enable_unaudited" dust_collector/
 ```
 
 You get exactly two places that *use* a key:
 
 | Location | What it does | Local only? |
 |----------|--------------|-------------|
-| `wallets.py` `Account.from_mnemonic(...)` | derive address+key from your seed | yes — pure crypto |
+| `wallets.py` `seed_from_mnemonic(...)` + `key_from_seed(...)` | derive address+key from your seed | yes — pure crypto |
 | `core.py` `w3.eth.account.sign_transaction(tx, key)` | sign a transaction | yes — pure crypto |
 
 The line right after signing broadcasts **only the signed bytes**, never the key:
@@ -71,6 +71,10 @@ python collect.py scan        # reads balances only — never asks for a key
 
 `scan`, `audit` and `estimate` are fully read-only. A key is required *only*
 for `collect`, `withdraw` and `distribute`, and even then only to sign locally.
+
+No message the tool prints repeats a line of your `.env`. A line it can't use
+is reported by its line number and word count only, because the libraries'
+own errors can quote a seed phrase back.
 
 ---
 

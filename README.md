@@ -55,7 +55,22 @@ word1 word2 word3 ... word12
 
 # address + private key:
 0xADDRESS=0xPRIVATEKEY
+
+# private key alone:
+0xPRIVATEKEY
+
+# address alone (read-only, unless a phrase or key below makes it):
+0xADDRESS=
 ```
+
+Many wallets: list their addresses as `0xADDRESS=` lines and paste the seed
+phrases (or keys) anywhere in the same file. Each address gets the key of the
+phrase that makes it — whether each wallet has its own phrase or all come from
+one (accounts `m/44'/60'/0'/0/0` to `/199` of a single phrase are searched).
+A phrase that gives a listed address its key adds no wallet of its own, so a
+phrase shared with your main wallet doesn't pull the main wallet in. An
+address nothing makes stays read-only: `Loaded N wallet(s), K with a key`
+tells you what is missing.
 
 ## Use
 
@@ -141,7 +156,7 @@ No telemetry. Full breakdown and how to verify: **[SECURITY.md](SECURITY.md)**.
 collect.py                  # CLI entry point
 dust_collector/
   config.py     # chains, tokens, constants — single source of truth
-  wallets.py    # .env parser (seed / address+seed / address=key)
+  wallets.py    # .env parser (seed / address+seed / address=key / key / address)
   prices.py     # CoinGecko + fallbacks
   web3compat.py # web3 6.x / 7.x shim
   bridges.py    # Relay / LiFi / zkEVM adapters behind one interface

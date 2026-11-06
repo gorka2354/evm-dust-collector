@@ -83,6 +83,16 @@ def _files_to_scan(tracked):
     return paths
 
 
+# Published BIP-39 test vectors (the trezor/python-mnemonic vectors). The tests
+# use them because no real wallet does. Any other phrase-like text still fails.
+PUBLIC_TEST_PHRASES = {
+    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+    "legal winner thank year wave sausage worth useful legal winner thank yellow",
+    "letter advice cage absurd amount doctor acoustic avoid letter advice cage above",
+    "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong",
+}
+
+
 def secret_scan():
     print("\n[1] Secret scan (no keys / seeds / .env committed)")
     priv = re.compile(r'\b(0x)?[a-fA-F0-9]{64}\b')
@@ -121,6 +131,8 @@ def secret_scan():
             fail(f"private-key-like 64-hex string at {rel}:{line_of(m)}")
             found += 1
         for m in seed.finditer(txt):
+            if " ".join(m.group(0).split()) in PUBLIC_TEST_PHRASES:
+                continue
             # Ignore English prose (sentences contain punctuation nearby).
             if fn.endswith((".md", ".py")) and (". " in txt[max(0, m.start()-40):m.end()+40]):
                 continue
