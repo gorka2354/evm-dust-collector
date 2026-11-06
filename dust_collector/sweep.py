@@ -14,6 +14,7 @@ import csv
 import functools
 import os
 import time
+from decimal import ROUND_CEILING, Decimal
 
 from web3 import Web3
 from web3.exceptions import TransactionNotFound
@@ -386,6 +387,7 @@ def sweep_all(wallets, to, live=False, workers=8, chains=None, w3_for=None, only
 
 
 FUND_MARGIN = 2  # a top-up covers twice the worst-case fee: gas prices move before the sweep runs
+CODE_RECEIVE_GAS = 100_000  # gas assumed for paying an address with code while no exact estimate can be had
 
 
 def _moves_once_funded(r):
@@ -462,17 +464,20 @@ def fund_chain(w3, chain, cfg, funder, key, needs, live, rows, own=None, others=
         amount = top_up(need, max_fee, l1_fee)
         if not amount:
             continue
-        # First without the value: a node refuses an estimate for more than the
-        # funder holds, and an empty funder's plan must still say what to send it.
+        # Paying an address that runs code (an EIP-7702 account) can cost more
+        # with a value than without, so the value is in the estimate when the
+        # funder can afford it; a node refuses one for more than it holds, and
+        # an empty funder's plan must still say what to send it. Then a recipient
+        # with code is given CODE_RECEIVE_GAS rather than a value-free figure.
         gas = int(w3.eth.estimate_gas({"from": funder, "to": to, "value": 0}) * 1.2)
+        if amount + gas * max_fee + l1_fee <= available:
+            gas = int(w3.eth.estimate_gas({"from": funder, "to": to, "value": amount}) * 1.2)
+        elif w3.eth.get_code(to):
+            gas = max(gas, CODE_RECEIVE_GAS)
         fee = gas * max_fee + l1_fee
         if not worth_sending(need["usd"], to_usd(native, (amount + fee) / 10 ** decimals)):
             row(to, amount, fee, need["usd"], "not worth it")
             continue
-        if amount + fee <= available:
-            # Then with it: code at the recipient (an EIP-7702 account) may cost more for a real amount.
-            gas = int(w3.eth.estimate_gas({"from": funder, "to": to, "value": amount}) * 1.2)
-            fee = gas * max_fee + l1_fee
         asked += amount + fee
         if amount + fee > available:
             row(to, amount, fee, need["usd"], "funder short")
@@ -492,9 +497,18 @@ def fund_chain(w3, chain, cfg, funder, key, needs, live, rows, own=None, others=
     if not live:
         wanted = asked + reserve
         short = max(wanted - held, 0)
-        more = f"send it {short / 10 ** decimals:.6g} {native} more" if short else "enough"
-        print(f"  [*] {chain}: the funder needs {wanted / 10 ** decimals:.6g} {native} in all, "
+        more = f"send it {_up(short / 10 ** decimals)} {native} more" if short else "enough"
+        print(f"  [*] {chain}: the funder needs {_up(wanted / 10 ** decimals)} {native} in all, "
               f"holds {held / 10 ** decimals:.6g}: {more}")
+
+
+def _up(amount, digits=4):
+    """An amount rounded up to `digits` significant digits: sending what is printed is never short."""
+    if amount <= 0:
+        return "0"
+    exact = Decimal(repr(amount))
+    step = Decimal(1).scaleb(exact.adjusted() - digits + 1)
+    return format(exact.quantize(step, rounding=ROUND_CEILING), "f")
 
 
 def fund_all(wallets, funder, to, live=False, chains=None, w3_for=None):
