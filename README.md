@@ -148,9 +148,16 @@ destination on the chain where it sits — the native coin less the worst-case
 fee (gas at a ceiling of 1.3× the base fee, plus the L1 data fee on OP-stack
 chains and Scroll), and the ERC-20s listed in `config.py` with a standard
 `transfer`. A balance under `SWEEP_MIN_USD` or one whose fee would take more
-than `SWEEP_MAX_FEE_SHARE` of it stays put. Chains whose node is down or
-answers with another chain id are skipped up front, and a wallet with a
-transaction still in flight on a chain is left alone there until the next run.
+than `SWEEP_MAX_FEE_SHARE` of it stays put, and so does a token whose
+`transfer` answers `false`. Chains whose node is down or answers with another
+chain id are skipped up front, and a wallet with a transaction still in flight
+on a chain is left alone there until the next run.
+
+`--live` always plans first, then sends only the wallet/chain pairs that plan
+listed, from the wallets that have a key, after you type `yes` (or pass
+`--yes`). Every transfer and its hash — including any that is still pending or
+whose broadcast reply was lost — goes to `sweep-<date>-<time>.csv` in the
+current folder.
 
 ## Supported chains (33)
 
