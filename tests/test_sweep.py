@@ -364,6 +364,13 @@ def test_a_wrapped_token_is_valued_as_what_it_wraps(monkeypatch):
     assert weth["usd"] == pytest.approx(2.0)
 
 
+def test_a_pool_share_is_judged_by_its_approximate_price():
+    token = {"symbol": "LP", "address": TOKEN, "decimals": 18, "usd": 1000.0}
+    assert sweep.token_usd(token, 0.002) == pytest.approx(2.0)
+    assert sweep.token_priced(token)
+    assert not sweep.token_priced({"symbol": "LP", "address": TOKEN, "decimals": 18})
+
+
 @pytest.mark.parametrize("base_fee, status", [(GWEI // 10, "planned"), (GWEI, "not worth it")])
 def test_a_token_without_a_price_moves_only_while_its_transfer_is_cheap(monkeypatch, base_fee, status):
     # 60k gas at 1.3x base fee: $0.0156 at 0.1 gwei, $0.156 at 1 gwei, against a $0.10 ceiling.

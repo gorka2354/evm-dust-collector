@@ -68,8 +68,9 @@ CHAINS = {
 }
 
 # ERC20 tokens worth scanning/sweeping per chain. "price_of" names the symbol a
-# token is priced as (WETH as ETH); a token without a known price moves in a
-# sweep only while its transfer costs under SWEEP_UNPRICED_MAX_FEE_USD.
+# token is priced as (WETH as ETH); "usd" is an approximate price for a pool
+# share with no market price. A token with neither moves in a sweep only while
+# its transfer costs under SWEEP_UNPRICED_MAX_FEE_USD.
 TOKENS = {
     "polygon": [
         {"symbol": "USDC",   "address": "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", "decimals": 6},
@@ -87,10 +88,10 @@ TOKENS = {
         {"symbol": "USDC.e", "address": "0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8", "decimals": 6},
         {"symbol": "USDC",   "address": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831", "decimals": 6},
         {"symbol": "USDT",   "address": "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9", "decimals": 6},
-        # GMX V2 market tokens: no market price here, so they move whenever gas is cheap.
-        {"symbol": "GM",     "address": "0x9C2433dFD71096C435Be9465220BB2B189375eA7", "decimals": 18},
-        {"symbol": "GM",     "address": "0x70d95587d40A2caf56bd97485aB3Eec10Bee6336", "decimals": 18},
-        {"symbol": "GM",     "address": "0xB686BcB112660343E6d15BDb65297e110C8311c4", "decimals": 18},
+        # GMX V2 market tokens. "usd" is an approximate price (2026-11), only to judge a fee by.
+        {"symbol": "GM",     "address": "0x9C2433dFD71096C435Be9465220BB2B189375eA7", "decimals": 18, "usd": 1.36},
+        {"symbol": "GM",     "address": "0x70d95587d40A2caf56bd97485aB3Eec10Bee6336", "decimals": 18, "usd": 1.83},
+        {"symbol": "GM",     "address": "0xB686BcB112660343E6d15BDb65297e110C8311c4", "decimals": 18, "usd": 1.17},
     ],
     "optimism": [
         {"symbol": "USDC",   "address": "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85", "decimals": 6},
@@ -103,8 +104,8 @@ TOKENS = {
     "zksync": [
         {"symbol": "USDC.e", "address": "0x3355df6D4c9C3035724Fd0e3914dE96A5a83aaf4", "decimals": 6},
         {"symbol": "WETH",   "address": "0x5AEa5775959fBC2557Cc8789bC1bf90A239D9a91", "decimals": 18, "price_of": "ETH"},
-        # SyncSwap USDC/WETH classic pool share: no market price, moves whenever gas is cheap.
-        {"symbol": "cSLP",   "address": "0x80115c708E12eDd42E504c1cD52Aea96C547c05c", "decimals": 18},
+        # SyncSwap USDC/WETH classic pool share; "usd" approximate (2026-11), only to judge a fee by.
+        {"symbol": "cSLP",   "address": "0x80115c708E12eDd42E504c1cD52Aea96C547c05c", "decimals": 18, "usd": 1.3e8},
     ],
     "zetachain": [
         {"symbol": "BNB.BSC", "address": "0x48f80608B672DC30DC7e3dbBd0343c5F02C738Eb", "decimals": 18, "price_of": "BNB"},
