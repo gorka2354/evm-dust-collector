@@ -27,13 +27,16 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           if [ "${{ matrix.web3 }}" = "6" ]; then
-            pip install "web3>=6,<7" requests
+            pip install "web3>=6,<7" requests pytest
           else
-            pip install "web3>=7" requests
+            pip install "web3>=7" requests pytest
           fi
 
       - name: Security audit (no secrets, no new egress)
         run: python scripts/security_audit.py
+
+      - name: Tests
+        run: python -m pytest -q
 
       - name: Import + compile smoke test
         run: |
