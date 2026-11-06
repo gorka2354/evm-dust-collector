@@ -53,6 +53,7 @@ CHAINS = {
     "ink":        {"id": 57073,    "rpc": "https://rpc-gel.inkonchain.com",                 "native": "ETH",  "decimals": 18, "bridge": "relay"},
     "unichain":   {"id": 130,      "rpc": "https://mainnet.unichain.org",                   "native": "ETH",  "decimals": 18, "bridge": "relay"},
     "lisk":       {"id": 1135,     "rpc": "https://rpc.api.lisk.com",                       "native": "ETH",  "decimals": 18, "bridge": "relay"},
+    "opbnb":      {"id": 204,      "rpc": "https://opbnb-mainnet-rpc.bnbchain.org",         "native": "BNB",  "decimals": 18, "bridge": None},
 }
 
 # ERC20 tokens worth scanning/sweeping per chain.

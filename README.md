@@ -159,12 +159,14 @@ listed, from the wallets that have a key, after you type `yes` (or pass
 whose broadcast reply was lost — goes to `sweep-<date>-<time>.csv` in the
 current folder.
 
-## Supported chains (33)
+## Supported chains (34)
 
 Ethereum, Arbitrum, Optimism, Base, Polygon, BSC, Avalanche, Fantom, zkSync,
 Linea, Scroll, Gnosis, Mantle, Celo, ZetaChain, Manta, Lens, Zora, Taiko,
 Polygon zkEVM, Abstract, Cyber, Blast, Mode, CORE, Gravity, Sonic, Sei, Bob,
-Worldchain, Ink, Unichain, Lisk.
+Worldchain, Ink, Unichain, Lisk, opBNB.
+
+opBNB has no bridge adapter yet: `scan` and `sweep` cover it, `collect` skips it.
 
 All chains and RPC endpoints live in one place: `dust_collector/config.py`.
 
