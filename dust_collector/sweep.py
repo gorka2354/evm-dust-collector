@@ -264,14 +264,15 @@ def print_sweep(rows, live):
     skipped = {}
     for r in rows:
         if r["status"] not in ("planned", "sent", "pending"):
-            key = (r["chain"], r["status"].split(":")[0])
-            entry = skipped.setdefault(key, {"usd": 0.0, "count": 0})
+            status, _, detail = r["status"].partition(": ")
+            entry = skipped.setdefault((r["chain"], r["symbol"], status), {"usd": 0.0, "count": 0, "detail": detail})
             entry["usd"] += r["usd"]
             entry["count"] += 1
     if skipped:
         print("\n  Left behind:")
-        for (chain, status), e in sorted(skipped.items(), key=lambda item: -item[1]["usd"]):
-            print(f"  {chain:<12} {status:<14} {e['count']:>4}  ${e['usd']:.2f}")
+        for (chain, symbol, status), e in sorted(skipped.items(), key=lambda item: -item[1]["usd"]):
+            detail = f"  ({e['detail'][:50]})" if e["detail"] else ""
+            print(f"  {chain:<12} {symbol:<7} {status:<13} {e['count']:>4}  ${e['usd']:.2f}{detail}")
     for r in rows:
         if r["status"] in ("reverted", "pending"):
             print(f"  [{r['status'].upper()}] {r['chain']} {r['wallet'][:10]}... {r['symbol']}: {r['tx']}")
