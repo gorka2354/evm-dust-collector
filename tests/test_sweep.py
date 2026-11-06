@@ -424,6 +424,33 @@ def test_a_node_refusing_receipt_reads_for_a_while_still_ends_in_sent():
     assert row["status"] == "sent"
 
 
+def test_no_receipt_read_starts_after_the_deadline(monkeypatch):
+    class Clock:
+        now = 0.0
+
+        def monotonic(self):
+            return self.now
+
+        def sleep(self, seconds):
+            self.now += seconds
+
+    clock = Clock()
+    asked_at = []
+
+    class Node:
+        def get_transaction_receipt(self, tx_hash):
+            asked_at.append(clock.now)
+            clock.now += 0.5  # each read takes a while
+            raise LookupError("transaction not found")
+
+    monkeypatch.setattr(sweep, "time", clock)
+    monkeypatch.setattr(sweep, "RECEIPT_TIMEOUT", 10)
+    monkeypatch.setattr(sweep, "RECEIPT_POLL", 4)
+    assert sweep._receipt(FakeW3(Node()), "0x" + "00" * 32) is None
+    assert asked_at and max(asked_at) < 10
+    assert clock.now <= 10
+
+
 def test_receipts_are_polled_gently():
     # web3's own wait polls every 0.1 s, which got public nodes to ban this machine.
     # The fixture speeds polling up for these tests, so check the value as shipped.
