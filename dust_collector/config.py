@@ -122,6 +122,9 @@ TOKENS = {
     "celo": [
         {"symbol": "EURA",   "address": "0xC16B81Af351BA9e64C1a069E3Ab18c244A1E3049", "decimals": 18},
     ],
+    "cyber": [
+        {"symbol": "CYBER",  "address": "0x14778860E937f509e651192a90589dE711Fb88a9", "decimals": 18},
+    ],
     "mantle": [
         {"symbol": "USDT",   "address": "0x201EBa5CC46D216Ce6DC03F6a759e8E766e956aE", "decimals": 6},
     ],
